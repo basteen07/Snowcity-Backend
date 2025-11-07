@@ -11,6 +11,8 @@ const PORT = process.env.PORT || 4000;
 
 const server = http.createServer(app);
 
+
+
 // Start server only after confirming DB connectivity
 async function start() {
   try {

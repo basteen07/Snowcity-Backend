@@ -14,28 +14,16 @@ const app = express();
 if (process.env.TRUST_PROXY) {
   app.set('trust proxy', Number(process.env.TRUST_PROXY));
 }
-app.use(express.json({ limit: process.env.MAX_JSON_SIZE || '12mb' }));
-app.use(express.urlencoded({ limit: process.env.MAX_URLENCODED_SIZE || '12mb', extended: true }));
 
-const apiRoutes = require('./routes');
-// Security and performance middleware
-app.use(helmet());
-app.use(compression());
-app.use(hpp());
-app.use('/api', apiRoutes);
-// Body parsers
+// Body parsers — ONCE, EARLY!
 app.use(express.json({ limit: process.env.MAX_JSON_SIZE || '2mb' }));
 app.use(express.urlencoded({ limit: process.env.MAX_URLENCODED_SIZE || '2mb', extended: true }));
 
-
-
-
-
-app.post('/_echo', express.json(), (req, res) => {
-  res.json({ body: req.body, headers: req.headers });
-});
-// CORS
-app.use(cors(corsOptions));
+// Security & CORS — EARLY (BEFORE ROUTES!)
+app.use(helmet());
+app.use(compression());
+app.use(hpp());
+app.use(cors(corsOptions)); // ← FIXED: BEFORE ROUTES!
 
 // HTTP logging via morgan -> winston
 app.use(
@@ -45,6 +33,15 @@ app.use(
     },
   })
 );
+
+// Routes — AFTER CORS!
+const apiRoutes = require('./routes');
+app.use('/api', apiRoutes);
+
+// Echo endpoint
+app.post('/_echo', (req, res) => {
+  res.json({ body: req.body, headers: req.headers });
+});
 
 // Health check
 app.get('/health', (req, res) => {
@@ -60,10 +57,6 @@ app.get('/', (req, res) => {
   res.json({ name: 'SnowCity API', version: '1.0.0' });
 });
 
-// TODO: mount routes when ready
-// const apiRoutes = require('./routes');
-// app.use('/api', apiRoutes);
-
 // 404
 app.use((req, res, next) => {
   res.status(404).json({
@@ -73,7 +66,6 @@ app.use((req, res, next) => {
 });
 
 // Error handler
-// Note: keep signature (err, req, res, next)
 app.use((err, req, res, next) => {
   logger.error('Unhandled error', {
     message: err.message,
@@ -86,8 +78,5 @@ app.use((err, req, res, next) => {
     error: err.message || 'Internal Server Error',
   });
 });
-
-
-
 
 module.exports = app;
