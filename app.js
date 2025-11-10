@@ -1,4 +1,5 @@
 const express = require('express');
+const path = require('path');
 const helmet = require('helmet');
 const compression = require('compression');
 const cors = require('cors');
@@ -24,6 +25,9 @@ app.use(helmet());
 app.use(compression());
 app.use(hpp());
 app.use(cors(corsOptions)); // ← FIXED: BEFORE ROUTES!
+
+// Serve uploaded assets
+app.use('/uploads', express.static(path.resolve(__dirname, 'uploads')));
 
 // HTTP logging via morgan -> winston
 app.use(

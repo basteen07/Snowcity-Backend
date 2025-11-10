@@ -36,5 +36,6 @@ router.use('/banners', require('./banners.routes'));
 router.use('/pages', require('./pages.routes'));
 router.use('/blogs', require('./blogs.routes'));
 router.use('/analytics', require('./analytics.routes'));
+router.use('/uploads', require('./uploads.routes'));
 
 module.exports = router;
