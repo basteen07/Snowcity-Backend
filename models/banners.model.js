@@ -1,4 +1,5 @@
 const { pool } = require('../config/db');
+const logger = require('../config/logger');
 
 function mapBanner(row) {
   if (!row) return null;
@@ -42,30 +43,53 @@ async function getBannerById(banner_id) {
 async function listBanners({ active = null, attraction_id = null, offer_id = null, limit = 50, offset = 0 } = {}) {
   const where = [];
   const params = [];
-  let i = 1;
+  let paramIndex = 1;
 
-  if (active != null) {
-    where.push(`b.active = $${i++}`);
+  if (active !== null && active !== undefined) {
+    where.push(`b.active = $${paramIndex++}`);
     params.push(Boolean(active));
   }
-  if (attraction_id) {
-    where.push(`b.linked_attraction_id = $${i++}`);
+  if (attraction_id != null) {
+    where.push(`b.linked_attraction_id = $${paramIndex++}`);
     params.push(Number(attraction_id));
   }
-  if (offer_id) {
-    where.push(`b.linked_offer_id = $${i++}`);
+  if (offer_id != null) {
+    where.push(`b.linked_offer_id = $${paramIndex++}`);
     params.push(Number(offer_id));
   }
 
-  const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
-  const { rows } = await pool.query(
-    `SELECT b.* FROM banners b
+  const whereSql = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
+  
+  // Add limit and offset with correct parameter indices
+  params.push(Number(limit));
+  params.push(Number(offset));
+  
+  const limitParam = paramIndex;
+  const offsetParam = paramIndex + 1;
+  
+  const query = `SELECT b.* FROM banners b
      ${whereSql}
      ORDER BY b.created_at DESC
-     LIMIT $${i} OFFSET $${i + 1}`,
-    [...params, limit, offset]
-  );
-  return rows.map(mapBanner);
+     LIMIT $${limitParam} OFFSET $${offsetParam}`;
+  
+  try {
+    logger.debug('Executing listBanners query', { query, params, paramIndex, limitParam, offsetParam });
+    const { rows } = await pool.query(query, params);
+    logger.debug('listBanners query result', { rowCount: rows.length });
+    const mapped = rows.map(mapBanner).filter(Boolean);
+    return mapped;
+  } catch (error) {
+    logger.error('Error in listBanners query', {
+      error: error.message,
+      query,
+      params,
+      paramIndex,
+      limitParam,
+      offsetParam,
+      stack: error.stack,
+    });
+    throw error;
+  }
 }
 
 async function updateBanner(banner_id, fields = {}) {

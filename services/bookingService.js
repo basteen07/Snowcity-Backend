@@ -65,6 +65,7 @@ async function computeTotals({ attraction_id, addons = [], coupon_code = null, o
  * Create a booking (user/admin).
  * If slot_id is provided, performs a FOR UPDATE capacity check to serialize concurrent bookings.
  * Persists add-ons snapshot into booking_addons.
+ * user_id can be null for guest bookings (will be updated after OTP verification).
  */
 async function createBooking({
   user_id = null,
@@ -84,7 +85,7 @@ async function createBooking({
       await assertCapacityAndLock(client, slot_id);
     }
 
-    // Insert booking
+    // Insert booking (user_id can be null for guest bookings)
     const ins = await client.query(
       `INSERT INTO bookings
          (user_id, attraction_id, slot_id, total_amount, discount_amount, payment_mode, booking_date)
@@ -115,6 +116,14 @@ async function createBooking({
 
     return booking;
   });
+}
+
+/**
+ * Update booking with user_id after OTP verification
+ */
+async function assignBookingToUser(booking_id, user_id) {
+  const bookingsModel = require('../models/bookings.model');
+  return await bookingsModel.updateBooking(booking_id, { user_id });
 }
 
 /**
@@ -193,6 +202,7 @@ module.exports = {
   // core
   computeTotals,
   createBooking,
+  assignBookingToUser,
   cancelBooking,
 
   // PayPhi

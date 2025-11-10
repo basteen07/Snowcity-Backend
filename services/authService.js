@@ -26,8 +26,17 @@ async function ensureRole(client, roleName) {
   return ins.rows[0].role_id;
 }
 
-async function register({ name, email, phone = null, password }) {
-  const password_hash = await bcrypt.hash(String(password), SALT_ROUNDS);
+async function register({ name, email, phone = null, password = null, isAdmin = false }) {
+  // For regular users, password is optional (passwordless)
+  // For admin users, password is required
+  let password_hash = null;
+  if (password) {
+    password_hash = await bcrypt.hash(String(password), SALT_ROUNDS);
+  } else if (isAdmin) {
+    const err = new Error('Password is required for admin users');
+    err.status = 400;
+    throw err;
+  }
 
   const user = await withTransaction(async (client) => {
     // create user
@@ -39,8 +48,9 @@ async function register({ name, email, phone = null, password }) {
     );
     const u = rows[0];
 
-    // ensure "user" role
-    const roleId = await ensureRole(client, 'user');
+    // ensure "user" role (or admin role if isAdmin)
+    const roleName = isAdmin ? 'admin' : 'user';
+    const roleId = await ensureRole(client, roleName);
     await client.query(
       `INSERT INTO user_roles (user_id, role_id)
        VALUES ($1, $2)
@@ -50,25 +60,55 @@ async function register({ name, email, phone = null, password }) {
     return u;
   });
 
-  const token = signJwt({ sub: user.user_id, email: user.email });
-  const exp = new Date(Date.now() + 1000 * 60 * 60 * 24 * 7); // fallback exp mirror
+  // For passwordless users, they need to verify OTP first
+  // Only generate token if password was provided (admin flow)
+  if (password_hash) {
+    const token = signJwt({ sub: user.user_id, email: user.email });
+    const exp = new Date(Date.now() + 1000 * 60 * 60 * 24 * 7); // fallback exp mirror
 
-  await usersModel.setJwt(user.user_id, { token, expiresAt: exp });
+    await usersModel.setJwt(user.user_id, { token, expiresAt: exp });
 
-  return { user, token, expires_at: exp.toISOString() };
+    return { user, token, expires_at: exp.toISOString() };
+  }
+
+  // For passwordless users, return user without token (they need to verify OTP)
+  return { user, token: null, expires_at: null, requires_otp: true };
 }
 
-async function login({ email, password }) {
+async function login({ email, password = null }) {
   const row = await usersModel.getUserByEmail(email);
   if (!row) {
-    const err = new Error('Invalid email or password');
-    err.status = 401;
+    const err = new Error('User not found');
+    err.status = 404;
     throw err;
   }
-  const ok = await bcrypt.compare(String(password), row.password_hash || '');
-  if (!ok) {
-    const err = new Error('Invalid email or password');
-    err.status = 401;
+
+  // Check if user has password (admin users)
+  if (row.password_hash) {
+    // Admin user - password required
+    if (!password) {
+      const err = new Error('Password is required for this account');
+      err.status = 400;
+      throw err;
+    }
+    const ok = await bcrypt.compare(String(password), row.password_hash);
+    if (!ok) {
+      const err = new Error('Invalid password');
+      err.status = 401;
+      throw err;
+    }
+  } else {
+    // Regular user - passwordless, use OTP flow
+    if (password) {
+      const err = new Error('This account does not use passwords. Please use OTP verification.');
+      err.status = 400;
+      throw err;
+    }
+    // For passwordless users, they should use OTP flow
+    // Return error indicating OTP is required
+    const err = new Error('This account requires OTP verification. Please use sendOtp and verifyOtp endpoints.');
+    err.status = 403;
+    err.requires_otp = true;
     throw err;
   }
 
@@ -91,7 +131,7 @@ function generateOtp() {
   return otpGenerator.generate(6, { digits: true, upperCaseAlphabets: false, lowerCaseAlphabets: false, specialChars: false });
 }
 
-async function sendOtp({ user_id = null, email = null, phone = null, channel = 'sms' }) {
+async function sendOtp({ user_id = null, email = null, phone = null, name = null, channel = 'sms', createIfNotExists = false }) {
   // Resolve user if needed
   let user = null;
   if (user_id) {
@@ -102,6 +142,42 @@ async function sendOtp({ user_id = null, email = null, phone = null, channel = '
   } else if (phone) {
     const row = await pool.query(`SELECT * FROM users WHERE phone = $1`, [phone]);
     user = row.rows[0] || null;
+  }
+
+  // Create user if not exists and createIfNotExists is true (for booking flow)
+  if (!user && createIfNotExists) {
+    if (!email && !phone) {
+      const err = new Error('email or phone is required to create user');
+      err.status = 400;
+      throw err;
+    }
+    if (!name) {
+      const err = new Error('name is required to create user');
+      err.status = 400;
+      throw err;
+    }
+
+    // Create user without password (passwordless for regular users)
+    user = await withTransaction(async (client) => {
+      const { rows } = await client.query(
+        `INSERT INTO users (name, email, phone, password_hash, otp_verified)
+         VALUES ($1, $2, $3, NULL, FALSE)
+         RETURNING user_id, name, email, phone, otp_verified, last_login_at, created_at, updated_at`,
+        [name, email || null, phone || null]
+      );
+      const u = rows[0];
+
+      // ensure "user" role
+      const roleId = await ensureRole(client, 'user');
+      await client.query(
+        `INSERT INTO user_roles (user_id, role_id)
+         VALUES ($1, $2)
+         ON CONFLICT (user_id, role_id) DO NOTHING`,
+        [u.user_id, roleId]
+      );
+      return u;
+    });
+    logger.info('Created new user via OTP flow', { user_id: user.user_id, email, phone });
   }
 
   if (!user) {
@@ -135,10 +211,28 @@ async function sendOtp({ user_id = null, email = null, phone = null, channel = '
   return { user_id: user.user_id, sent: true, channel };
 }
 
-async function verifyOtp({ user_id, otp }) {
+async function verifyOtp({ user_id, otp, email = null, phone = null }) {
+  // If user_id not provided, try to find user by email or phone
+  let userId = user_id;
+  if (!userId) {
+    if (email) {
+      const row = await pool.query(`SELECT user_id FROM users WHERE email = $1`, [email]);
+      if (row.rows[0]) userId = row.rows[0].user_id;
+    } else if (phone) {
+      const row = await pool.query(`SELECT user_id FROM users WHERE phone = $1`, [phone]);
+      if (row.rows[0]) userId = row.rows[0].user_id;
+    }
+  }
+
+  if (!userId) {
+    const err = new Error('User not found');
+    err.status = 404;
+    throw err;
+  }
+
   const { rows } = await pool.query(
     `SELECT user_id, otp_code, otp_expires_at FROM users WHERE user_id = $1`,
-    [user_id]
+    [userId]
   );
   const u = rows[0];
   if (!u || !u.otp_code || !u.otp_expires_at) {
@@ -157,14 +251,29 @@ async function verifyOtp({ user_id, otp }) {
     throw err;
   }
 
+  // Verify OTP and generate token automatically
   await pool.query(
     `UPDATE users
-     SET otp_verified = TRUE, otp_code = NULL, otp_expires_at = NULL, updated_at = NOW()
+     SET otp_verified = TRUE, otp_code = NULL, otp_expires_at = NULL, updated_at = NOW(), last_login_at = NOW()
      WHERE user_id = $1`,
-    [user_id]
+    [userId]
   );
 
-  return { verified: true };
+  // Get user details
+  const user = await usersModel.getUserById(userId);
+  
+  // Generate JWT token automatically after OTP verification
+  const token = signJwt({ sub: user.user_id, email: user.email });
+  const exp = new Date(Date.now() + 1000 * 60 * 60 * 24 * 7); // 7 days
+
+  await usersModel.setJwt(user.user_id, { token, expiresAt: exp });
+
+  return { 
+    verified: true, 
+    user, 
+    token, 
+    expires_at: exp.toISOString() 
+  };
 }
 
 async function forgotPassword({ email }) {

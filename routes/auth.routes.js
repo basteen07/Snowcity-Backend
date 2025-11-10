@@ -1,35 +1,30 @@
 const router = require('express').Router();
 const ctrl = require('../user/controllers/auth.controller');
-const profileCtrl = require('../user/controllers/profile.controller');
+const validate = require('../middlewares/validate');
 const { requireAuth } = require('../middlewares/authMiddleware');
 const { authLimiter, otpLimiter } = require('../middlewares/rateLimiter');
+const {
+  registerValidator,
+  loginValidator,
+  sendOtpValidator,
+  verifyOtpValidator,
+  forgotPasswordValidator,
+  resetPasswordValidator,
+} = require('../validators/auth.validators');
 
-// Auth
-router.post('/register', authLimiter, ctrl.register);
-router.post('/login', authLimiter, ctrl.login);
+// Register
+router.post('/register', authLimiter, validate(registerValidator), ctrl.register);
+
+// Login / Logout
+router.post('/login', authLimiter, validate(loginValidator), ctrl.login);
 router.post('/logout', requireAuth, ctrl.logout);
-const express = require('express');
-
-
-
-// Ensure JSON body parsing for these routes even if global parser is missing
-router.use(express.json());
-
-// Auth
-router.post('/login', authLimiter, ctrl.login);
-router.post('/register', authLimiter, ctrl.register);
-
 
 // OTP
-router.post('/otp/send', otpLimiter, ctrl.sendOtp);
-router.post('/otp/verify', otpLimiter, ctrl.verifyOtp);
+router.post('/otp/send', otpLimiter, validate(sendOtpValidator), ctrl.sendOtp);
+router.post('/otp/verify', otpLimiter, validate(verifyOtpValidator), ctrl.verifyOtp);
 
-// Password
-router.post('/password/forgot', authLimiter, ctrl.forgotPassword);
-router.post('/password/reset', authLimiter, ctrl.resetPassword);
-
-// Profile (current user)
-router.get('/me', requireAuth, profileCtrl.getProfile);
-router.patch('/me', requireAuth, profileCtrl.updateProfile);
+// Password reset via email code
+router.post('/password/forgot', authLimiter, validate(forgotPasswordValidator), ctrl.forgotPassword);
+router.post('/password/reset', authLimiter, validate(resetPasswordValidator), ctrl.resetPassword);
 
 module.exports = router;

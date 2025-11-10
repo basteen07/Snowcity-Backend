@@ -73,7 +73,7 @@ CREATE TABLE users (
     name            VARCHAR(100) NOT NULL,
     email           CITEXT UNIQUE NOT NULL,
     phone           VARCHAR(20) UNIQUE,
-    password_hash   TEXT NOT NULL,
+    password_hash   TEXT,
     otp_code        VARCHAR(10),
     otp_expires_at  TIMESTAMPTZ,
     otp_verified    BOOLEAN NOT NULL DEFAULT FALSE,
@@ -389,6 +389,7 @@ FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
 CREATE INDEX idx_banners_linked_attraction_id ON banners(linked_attraction_id);
 CREATE INDEX idx_banners_linked_offer_id ON banners(linked_offer_id);
+CREATE INDEX idx_banners_active ON banners(active);
 
 -- ANALYTICS
 CREATE TABLE analytics (

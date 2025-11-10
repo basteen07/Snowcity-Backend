@@ -1,4 +1,5 @@
 const bannersModel = require('../../models/banners.model');
+const logger = require('../../config/logger');
 
 exports.listBanners = async (req, res, next) => {
   try {
@@ -11,9 +12,30 @@ exports.listBanners = async (req, res, next) => {
     const limit = Math.min(Math.max(parseInt(req.query.limit || '20', 10), 1), 100);
     const offset = (page - 1) * limit;
 
+    logger.debug('listBanners called', {
+      query: req.query,
+      active,
+      attraction_id,
+      offer_id,
+      page,
+      limit,
+      offset,
+    });
+
     const data = await bannersModel.listBanners({ active, attraction_id, offer_id, limit, offset });
+    
+    logger.debug('listBanners result', {
+      dataLength: data.length,
+      dataCount: data.length,
+    });
+
     res.json({ data, meta: { page, limit, count: data.length } });
   } catch (err) {
+    logger.error('Error in listBanners controller', {
+      error: err.message,
+      stack: err.stack,
+      query: req.query,
+    });
     next(err);
   }
 };

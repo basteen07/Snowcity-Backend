@@ -16,6 +16,9 @@ router.use('/addons', require('./addons.routes'));
 router.use('/combos', require('./combos.routes'));
 router.use('/coupons', require('./coupons.routes'));
 router.use('/offers', require('./offers.routes'));
+router.use('/banners', require('../user/routes/banners.routes'));
+router.use('/pages', require('./pages.routes'));
+router.use('/blogs', require('./blogs.routes'));
 
 // ...
 router.use('/payments', require('./payments.routes'));
