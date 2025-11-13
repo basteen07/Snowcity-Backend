@@ -1,35 +1,47 @@
-const { pool, withTransaction } = require('../../config/db');
-const logger = require('../../config/logger');
+// admin/models/admin.model.js
+const { pool } = require('../../config/db');
 
-const ADMIN_ROLES = ['admin', 'subadmin'];
+const ADMIN_ROLES = ['root', 'admin', 'subadmin', 'superadmin'];
 
 function sanitizeGranularity(granularity) {
   const g = String(granularity || 'day').toLowerCase();
   return ['day', 'week', 'month'].includes(g) ? g : 'day';
 }
 
-/**
- * Dashboard summary KPIs
- * - total_bookings (non-cancelled)
- * - total_revenue (Completed payments)
- * - today_bookings
- * - pending_payments
- * - unique_users
- */
+// Dashboard summary KPIs (includes total_people)
 async function getDashboardSummary({ from = null, to = null, attraction_id = null } = {}) {
   const sql = `
     SELECT
-      COUNT(*) FILTER (WHERE b.created_at >= COALESCE($1::timestamptz, NOW() - INTERVAL '30 days')
-                       AND b.created_at < COALESCE($2::timestamptz, NOW())) AS total_bookings,
+      COUNT(*) FILTER (
+        WHERE b.created_at >= COALESCE($1::timestamptz, NOW() - INTERVAL '30 days')
+          AND b.created_at <  COALESCE($2::timestamptz, NOW())
+      ) AS total_bookings,
+
       COALESCE(SUM(CASE WHEN b.payment_status = 'Completed' THEN b.final_amount ELSE 0 END)
-               FILTER (WHERE b.created_at >= COALESCE($1::timestamptz, NOW() - INTERVAL '30 days')
-                       AND b.created_at < COALESCE($2::timestamptz, NOW())), 0) AS total_revenue,
+        FILTER (
+          WHERE b.created_at >= COALESCE($1::timestamptz, NOW() - INTERVAL '30 days')
+            AND b.created_at <  COALESCE($2::timestamptz, NOW())
+        ), 0) AS total_revenue,
+
+      COALESCE(SUM(b.quantity)
+        FILTER (
+          WHERE b.created_at >= COALESCE($1::timestamptz, NOW() - INTERVAL '30 days')
+            AND b.created_at <  COALESCE($2::timestamptz, NOW())
+        ), 0) AS total_people,
+
       COUNT(*) FILTER (WHERE b.created_at::date = CURRENT_DATE) AS today_bookings,
-      COUNT(*) FILTER (WHERE b.payment_status = 'Pending'
-                       AND b.created_at >= COALESCE($1::timestamptz, NOW() - INTERVAL '30 days')
-                       AND b.created_at < COALESCE($2::timestamptz, NOW())) AS pending_payments,
-      COUNT(DISTINCT b.user_id) FILTER (WHERE b.created_at >= COALESCE($1::timestamptz, NOW() - INTERVAL '30 days')
-                       AND b.created_at < COALESCE($2::timestamptz, NOW())) AS unique_users
+
+      COUNT(*) FILTER (
+        WHERE b.payment_status = 'Pending'
+          AND b.created_at >= COALESCE($1::timestamptz, NOW() - INTERVAL '30 days')
+          AND b.created_at <  COALESCE($2::timestamptz, NOW())
+      ) AS pending_payments,
+
+      COUNT(DISTINCT b.user_id) FILTER (
+        WHERE b.created_at >= COALESCE($1::timestamptz, NOW() - INTERVAL '30 days')
+          AND b.created_at <  COALESCE($2::timestamptz, NOW())
+      ) AS unique_users
+
     FROM bookings b
     WHERE b.booking_status <> 'Cancelled'
       AND ($3::bigint IS NULL OR b.attraction_id = $3::bigint);
@@ -38,15 +50,14 @@ async function getDashboardSummary({ from = null, to = null, attraction_id = nul
   return rows[0];
 }
 
-/**
- * Top attractions by bookings and revenue within range
- */
+// Top attractions (bookings, people, revenue) within range
 async function getTopAttractions({ from = null, to = null, limit = 10, attraction_id = null } = {}) {
   const sql = `
     SELECT
       a.attraction_id,
       a.title,
       COUNT(*) AS bookings,
+      COALESCE(SUM(b.quantity), 0) AS people,
       COALESCE(SUM(CASE WHEN b.payment_status = 'Completed' THEN b.final_amount ELSE 0 END), 0) AS revenue
     FROM bookings b
     JOIN attractions a ON a.attraction_id = b.attraction_id
@@ -62,16 +73,14 @@ async function getTopAttractions({ from = null, to = null, limit = 10, attractio
   return rows;
 }
 
-/**
- * Time-series trend of bookings and revenue
- * granularity: 'day' | 'week' | 'month'
- */
+// Sales trend (bookings, people, revenue) by granularity
 async function getSalesTrend({ from = null, to = null, granularity = 'day', attraction_id = null } = {}) {
   const g = sanitizeGranularity(granularity);
   const sql = `
     SELECT
       date_trunc('${g}', b.created_at) AS bucket,
       COUNT(*) AS bookings,
+      COALESCE(SUM(b.quantity), 0) AS people,
       COALESCE(SUM(CASE WHEN b.payment_status = 'Completed' THEN b.final_amount ELSE 0 END), 0) AS revenue
     FROM bookings b
     WHERE b.booking_status <> 'Cancelled'
@@ -85,9 +94,7 @@ async function getSalesTrend({ from = null, to = null, granularity = 'day', attr
   return rows;
 }
 
-/**
- * Latest bookings for admin dashboard table
- */
+// Latest bookings for admin dashboard
 async function getRecentBookings({ limit = 20, offset = 0, attraction_id = null } = {}) {
   const sql = `
     SELECT
@@ -107,9 +114,7 @@ async function getRecentBookings({ limit = 20, offset = 0, attraction_id = null 
   return rows;
 }
 
-/**
- * Count bookings by booking_status for a quick status breakdown
- */
+// Count bookings by status
 async function getBookingCountsByStatus({ from = null, to = null, attraction_id = null } = {}) {
   const sql = `
     SELECT b.booking_status, COUNT(*)::int AS count
@@ -124,9 +129,7 @@ async function getBookingCountsByStatus({ from = null, to = null, attraction_id 
   return rows;
 }
 
-/**
- * List admin/subadmin users with roles
- */
+// List admins/subadmins with roles
 async function listAdmins({ search = '', role = null, limit = 20, offset = 0 } = {}) {
   const params = [];
   let idx = 1;
@@ -165,48 +168,32 @@ async function listAdmins({ search = '', role = null, limit = 20, offset = 0 } =
   return rows;
 }
 
-/**
- * Ensure a role exists, return role_id
- */
+// Ensure a role exists, return role_id (UPSERT-safe)
 async function ensureRole(roleName) {
   const name = String(roleName).toLowerCase();
-  const selectSql = `SELECT role_id FROM roles WHERE LOWER(role_name) = $1 LIMIT 1`;
-  const found = await pool.query(selectSql, [name]);
-  if (found.rows[0]) return found.rows[0].role_id;
-
-  const insertSql = `INSERT INTO roles (role_name, description) VALUES ($1, $2) RETURNING role_id`;
-  const { rows } = await pool.query(insertSql, [name, `${name} role`]);
+  const sql = `
+    INSERT INTO roles (role_name, description)
+    VALUES ($1, $2)
+    ON CONFLICT (role_name) DO UPDATE SET description = EXCLUDED.description
+    RETURNING role_id;
+  `;
+  const { rows } = await pool.query(sql, [name, `${name} role`]);
   return rows[0].role_id;
 }
 
-/**
- * Assign role to user (idempotent)
- */
+// Assign role to user (idempotent)
 async function assignRoleByName(userId, roleName) {
-  return withTransaction(async (client) => {
-    const roleId = await (async () => {
-      const name = String(roleName).toLowerCase();
-      const sel = await client.query(`SELECT role_id FROM roles WHERE LOWER(role_name) = $1`, [name]);
-      if (sel.rows[0]) return sel.rows[0].role_id;
-      const ins = await client.query(
-        `INSERT INTO roles (role_name, description) VALUES ($1, $2) RETURNING role_id`,
-        [name, `${name} role`]
-      );
-      return ins.rows[0].role_id;
-    })();
-
-    await client.query(
-      `INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2)
-       ON CONFLICT (user_id, role_id) DO NOTHING`,
-      [userId, roleId]
-    );
-    return { userId, roleId, assigned: true };
-  });
+  const roleId = await ensureRole(roleName);
+  await pool.query(
+    `INSERT INTO user_roles (user_id, role_id)
+     VALUES ($1, $2)
+     ON CONFLICT (user_id, role_id) DO NOTHING`,
+    [userId, roleId]
+  );
+  return { userId, roleId, assigned: true };
 }
 
-/**
- * Revoke role from user
- */
+// Revoke role from user
 async function revokeRoleByName(userId, roleName) {
   const name = String(roleName).toLowerCase();
   const sql = `
@@ -220,9 +207,7 @@ async function revokeRoleByName(userId, roleName) {
   return { userId, revoked: rowCount > 0 };
 }
 
-/**
- * Get all permissions for a user (via roles)
- */
+// Get all permissions for a user (via roles)
 async function getUserPermissions(userId) {
   const sql = `
     SELECT DISTINCT LOWER(p.permission_key) AS permission_key
@@ -236,26 +221,62 @@ async function getUserPermissions(userId) {
   return rows.map((r) => r.permission_key);
 }
 
-/**
- * Admin overview: combine several metrics
- */
+// Admin overview: combine summary + breakdown + top + trend
 async function getAdminOverview({ from = null, to = null, attraction_id = null } = {}) {
   const [summary, statusBreakdown, topAttractions, trend] = await Promise.all([
     getDashboardSummary({ from, to, attraction_id }),
     getBookingCountsByStatus({ from, to, attraction_id }),
-    getTopAttractions({ from, to, attraction_id, limit: 5 }),
-    getSalesTrend({ from, to, attraction_id, granularity: 'day' }),
+    getTopAttractions({ from, to, limit: 5, attraction_id }),
+    getSalesTrend({ from, to, granularity: 'day', attraction_id }),
   ]);
 
-  return {
-    summary,
-    statusBreakdown,
-    topAttractions,
-    trend,
-  };
+  return { summary, statusBreakdown, topAttractions, trend };
+}
+
+// Attractions-wise breakdown within range
+async function getAttractionBreakdown({ from = null, to = null, limit = 50 } = {}) {
+  const sql = `
+    SELECT
+      a.attraction_id,
+      a.title,
+      COUNT(*) AS bookings,
+      COALESCE(SUM(b.quantity), 0) AS people,
+      COALESCE(SUM(CASE WHEN b.payment_status = 'Completed' THEN b.final_amount ELSE 0 END), 0) AS revenue
+    FROM bookings b
+    JOIN attractions a ON a.attraction_id = b.attraction_id
+    WHERE b.booking_status <> 'Cancelled'
+      AND b.created_at >= COALESCE($1::timestamptz, NOW() - INTERVAL '30 days')
+      AND b.created_at <  COALESCE($2::timestamptz, NOW())
+    GROUP BY a.attraction_id, a.title
+    ORDER BY bookings DESC, revenue DESC
+    LIMIT $3;
+  `;
+  const { rows } = await pool.query(sql, [from, to, limit]);
+  return rows;
+}
+
+// Generic split (by payment_status | booking_status | payment_mode)
+async function getSplitData({ from = null, to = null, group_by = 'payment_status' } = {}) {
+  const allowed = new Set(['payment_status', 'booking_status', 'payment_mode']);
+  const col = allowed.has(String(group_by)) ? group_by : 'payment_status';
+  const sql = `
+    SELECT ${col} AS key,
+           COUNT(*)::int AS bookings,
+           COALESCE(SUM(b.quantity), 0)::int AS people,
+           COALESCE(SUM(CASE WHEN b.payment_status = 'Completed' THEN b.final_amount ELSE 0 END), 0) AS revenue
+    FROM bookings b
+    WHERE b.created_at >= COALESCE($1::timestamptz, NOW() - INTERVAL '30 days')
+      AND b.created_at <  COALESCE($2::timestamptz, NOW())
+      AND b.booking_status <> 'Cancelled'
+    GROUP BY ${col}
+    ORDER BY bookings DESC;
+  `;
+  const { rows } = await pool.query(sql, [from, to]);
+  return rows;
 }
 
 module.exports = {
+  sanitizeGranularity,
   getDashboardSummary,
   getTopAttractions,
   getSalesTrend,
@@ -267,4 +288,6 @@ module.exports = {
   revokeRoleByName,
   getUserPermissions,
   getAdminOverview,
+  getAttractionBreakdown,
+  getSplitData,
 };

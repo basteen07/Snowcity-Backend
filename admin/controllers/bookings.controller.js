@@ -1,9 +1,19 @@
+// admin/controllers/bookings.controller.js
 const { pool } = require('../../config/db');
 const bookingsModel = require('../../models/bookings.model');
 const bookingService = require('../../services/bookingService');
 const payphiService = require('../../services/payphiService');
 const { createApiLog } = require('../../models/apiLogs.model');
 const ticketService = require('../../services/ticketService');
+
+// Helpers
+function isRoot(req) {
+  const roles = (req.user?.roles || []).map((r) => String(r).toLowerCase());
+  return roles.includes('root') || roles.includes('superadmin');
+}
+function allowedAttractions(req) {
+  return req.user?.scopes?.attraction || [];
+}
 
 async function listBookings(req, res, next) {
   try {
@@ -17,6 +27,17 @@ async function listBookings(req, res, next) {
       page = '1',
       limit = '20',
     } = req.query;
+
+    // Scoping
+    const root = isRoot(req);
+    const scoped = allowedAttractions(req);
+    if (!root && scoped.length === 0) {
+      return res.json({ data: [], meta: { page: 1, limit: 0, total: 0 } });
+    }
+    if (!root && attraction_id && !scoped.includes(Number(attraction_id))) {
+      // Optional: return empty; or 403 to be explicit
+      return res.status(403).json({ error: 'Forbidden: attraction not in scope' });
+    }
 
     const p = Math.max(parseInt(page, 10) || 1, 1);
     const l = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100);
@@ -32,6 +53,13 @@ async function listBookings(req, res, next) {
     if (user_email) { where.push(`u.email ILIKE $${i}`); params.push(`%${user_email}%`); i++; }
     if (user_phone) { where.push(`u.phone ILIKE $${i}`); params.push(`%${user_phone}%`); i++; }
     if (attraction_id) { where.push(`b.attraction_id = $${i}`); params.push(Number(attraction_id)); i++; }
+
+    // Apply scope for non-root
+    if (!root) {
+      where.push(`b.attraction_id = ANY($${i}::bigint[])`);
+      params.push(scoped);
+      i++;
+    }
 
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
@@ -82,6 +110,15 @@ async function getBookingById(req, res, next) {
     );
     const row = rows[0];
     if (!row) return res.status(404).json({ error: 'Booking not found' });
+
+    // Scope check
+    if (!isRoot(req)) {
+      const scoped = allowedAttractions(req);
+      if (row.attraction_id && !scoped.includes(Number(row.attraction_id))) {
+        return res.status(403).json({ error: 'Forbidden: attraction not in scope' });
+      }
+    }
+
     res.json(row);
   } catch (err) {
     next(err);
@@ -101,6 +138,14 @@ async function createManualBooking(req, res, next) {
       booking_date = null,
       markPaid = false,
     } = req.body || {};
+
+    // Scope check
+    if (!isRoot(req)) {
+      const scoped = allowedAttractions(req);
+      if (attraction_id && !scoped.includes(Number(attraction_id))) {
+        return res.status(403).json({ error: 'Forbidden: attraction not in scope' });
+      }
+    }
 
     const booking = await bookingService.createBooking({
       user_id,
@@ -135,6 +180,19 @@ async function createManualBooking(req, res, next) {
 async function updateBooking(req, res, next) {
   try {
     const id = Number(req.params.id);
+
+    // Load current and scope-check
+    const current = await bookingsModel.getBookingById(id);
+    if (!current) return res.status(404).json({ error: 'Booking not found' });
+
+    if (!isRoot(req)) {
+      const scoped = allowedAttractions(req);
+      const targetAttractionId = req.body?.attraction_id != null ? Number(req.body.attraction_id) : current.attraction_id;
+      if (targetAttractionId && !scoped.includes(Number(targetAttractionId))) {
+        return res.status(403).json({ error: 'Forbidden: attraction not in scope' });
+      }
+    }
+
     const allowed = [
       'user_id',
       'attraction_id',
@@ -156,8 +214,14 @@ async function updateBooking(req, res, next) {
       if (req.body && req.body[k] !== undefined) payload[k] = req.body[k];
     }
 
+    // Optional guard: require payment_ref if marking Completed
+    if (payload.payment_status === 'Completed' && !payload.payment_ref) {
+      return res.status(400).json({ error: 'payment_ref is required for Completed payments' });
+    }
+
     const updated = await bookingsModel.updateBooking(id, payload);
     if (!updated) return res.status(404).json({ error: 'Booking not found' });
+
     if (payload.payment_status === 'Completed') {
       try {
         const urlPath = await ticketService.generateTicket(id);
@@ -175,6 +239,17 @@ async function updateBooking(req, res, next) {
 async function cancelBooking(req, res, next) {
   try {
     const id = Number(req.params.id);
+
+    // Scope check
+    const row = await bookingsModel.getBookingById(id);
+    if (!row) return res.status(404).json({ error: 'Booking not found' });
+    if (!isRoot(req)) {
+      const scoped = allowedAttractions(req);
+      if (row.attraction_id && !scoped.includes(Number(row.attraction_id))) {
+        return res.status(403).json({ error: 'Forbidden: attraction not in scope' });
+      }
+    }
+
     const updated = await bookingService.cancelBooking(id);
     if (!updated) return res.status(404).json({ error: 'Booking not found' });
     res.json(updated);
@@ -186,6 +261,17 @@ async function cancelBooking(req, res, next) {
 async function deleteBooking(req, res, next) {
   try {
     const id = Number(req.params.id);
+
+    // Scope check
+    const row = await bookingsModel.getBookingById(id);
+    if (!row) return res.status(404).json({ error: 'Booking not found' });
+    if (!isRoot(req)) {
+      const scoped = allowedAttractions(req);
+      if (row.attraction_id && !scoped.includes(Number(row.attraction_id))) {
+        return res.status(403).json({ error: 'Forbidden: attraction not in scope' });
+      }
+    }
+
     const { rowCount } = await pool.query(`DELETE FROM bookings WHERE booking_id = $1`, [id]);
     res.json({ deleted: rowCount > 0 });
   } catch (err) {
@@ -196,6 +282,17 @@ async function deleteBooking(req, res, next) {
 async function checkPayPhiStatusAdmin(req, res, next) {
   try {
     const id = Number(req.params.id);
+
+    // Scope check
+    const row = await bookingsModel.getBookingById(id);
+    if (!row) return res.status(404).json({ error: 'Booking not found' });
+    if (!isRoot(req)) {
+      const scoped = allowedAttractions(req);
+      if (row.attraction_id && !scoped.includes(Number(row.attraction_id))) {
+        return res.status(403).json({ error: 'Forbidden: attraction not in scope' });
+      }
+    }
+
     const out = await bookingService.checkPayPhiStatus(id);
     await createApiLog({
       endpoint: 'payphi_status_admin',
@@ -214,6 +311,15 @@ async function initiatePayPhiPaymentAdmin(req, res, next) {
     const id = Number(req.params.id);
     const b = await bookingsModel.getBookingById(id);
     if (!b) return res.status(404).json({ error: 'Booking not found' });
+
+    // Scope check
+    if (!isRoot(req)) {
+      const scoped = allowedAttractions(req);
+      if (b.attraction_id && !scoped.includes(Number(b.attraction_id))) {
+        return res.status(403).json({ error: 'Forbidden: attraction not in scope' });
+      }
+    }
+
     const { email, mobile } = (req.body && typeof req.body === 'object') ? req.body : {};
     if (!email || !mobile) return res.status(400).json({ error: 'email and mobile are required' });
     const out = await bookingService.initiatePayPhiPayment(id, { email, mobile, addlParam1: String(id), addlParam2: 'SnowCity' });
@@ -228,6 +334,15 @@ async function refundPayPhi(req, res, next) {
     const id = Number(req.params.id);
     const b = await bookingsModel.getBookingById(id);
     if (!b) return res.status(404).json({ error: 'Booking not found' });
+
+    // Scope check
+    if (!isRoot(req)) {
+      const scoped = allowedAttractions(req);
+      if (b.attraction_id && !scoped.includes(Number(b.attraction_id))) {
+        return res.status(403).json({ error: 'Forbidden: attraction not in scope' });
+      }
+    }
+
     if (b.payment_status !== 'Completed') return res.status(400).json({ error: 'Cannot refund: payment is not completed' });
 
     const amount = Number(req.body?.amount);

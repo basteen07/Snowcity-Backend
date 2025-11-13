@@ -1,14 +1,22 @@
 const router = require('express').Router();
-const ctrl = require('../controllers/pages.controller');
+const ctrlRaw = require('../controllers/pages.controller');
+const ctrl = ctrlRaw?.default || ctrlRaw;
 const { requirePermissions } = require('../middleware/permissionGuard');
 
-router.get('/', requirePermissions('pages:read'), ctrl.listPages);
-router.get('/:id', requirePermissions('pages:read'), ctrl.getPageById);
-router.post('/', requirePermissions('pages:write'), ctrl.createPage);
-router.put('/:id', requirePermissions('pages:write'), ctrl.updatePage);
-router.delete('/:id', requirePermissions('pages:write'), ctrl.deletePage);
+function ensure(fn, name) {
+  if (typeof fn !== 'function') {
+    throw new Error(`pages.routes: handler "${name}" is not a function (did you export it from pages.controller.js?)`);
+  }
+  return fn;
+}
 
-// Preview content (no persistence)
-router.post('/preview', requirePermissions('pages:write'), ctrl.previewPage);
+router.get('/', requirePermissions('pages:read'), ensure(ctrl.listPages, 'listPages'));
+router.get('/nav', requirePermissions('pages:read'), ensure(ctrl.listNav, 'listNav'));
+router.post('/preview', requirePermissions('pages:write'), ensure(ctrl.previewPage, 'previewPage'));
+
+router.get('/:id', requirePermissions('pages:read'), ensure(ctrl.getPageById, 'getPageById'));
+router.post('/', requirePermissions('pages:write'), ensure(ctrl.createPage, 'createPage'));
+router.put('/:id', requirePermissions('pages:write'), ensure(ctrl.updatePage, 'updatePage'));
+router.delete('/:id', requirePermissions('pages:write'), ensure(ctrl.deletePage, 'deletePage'));
 
 module.exports = router;

@@ -7,6 +7,7 @@ const { getSlotById, assertCapacityAndLock } = require('../models/attractionSlot
 const bookingsModel = require('../models/bookings.model');
 const bookingService = require('./bookingService');
 const payphiService = require('./payphiService');
+const payphi = require('../config/payphi');
 
 async function getOrCreateCart({ user_id = null, session_id = null, payment_mode = 'Online' }) {
   return cartModel.upsertOpenCart({ user_id, session_id, payment_mode });
@@ -153,18 +154,30 @@ async function initiatePayPhi({ user_id = null, session_id = null, email, mobile
     err.status = 400;
     throw err;
   }
-  const amount = cart.final_amount;
-  const merchantTxnNo = cart.cart_ref;
+  const amount = Number(cart.final_amount || 0);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    const err = new Error('Cart total must be greater than zero');
+    err.status = 400;
+    throw err;
+  }
+  // Build a unique merchantTxnNo per attempt to avoid PayPhi P1006 (duplicate reference)
+  const baseTxn = String(cart.cart_ref || `CART${cart.cart_id}`);
+  const timeSuffix = payphi.formatTxnDate().slice(-5); // last 5 digits from UTC timestamp
+  const rand2 = String(Math.floor(Math.random() * 90) + 10); // 2-digit random
+  const merchantTxnNo = `${baseTxn}${timeSuffix}${rand2}`;
+  const emailTrim = String(email || '').trim();
+  const mobileDigits = String(mobile || '').replace(/\D/g, '');
+  const normalizedMobile = mobileDigits.length >= 10 ? mobileDigits.slice(-10) : mobileDigits;
   const { redirectUrl, tranCtx, raw } = await payphiService.initiate({
     merchantTxnNo,
     amount,
-    customerEmailID: email,
-    customerMobileNo: mobile,
+    customerEmailID: emailTrim,
+    customerMobileNo: normalizedMobile,
     addlParam1: String(cart.cart_id),
     addlParam2: 'SnowCityCart',
   });
   if (tranCtx) {
-    await cartModel.setPayment(cart.cart_id, { payment_status: 'Pending', payment_ref: tranCtx });
+    await cartModel.setPayment(cart.cart_id, { payment_status: 'Pending', payment_ref: tranCtx, payment_txn_no: merchantTxnNo });
   }
   return { redirectUrl, tranCtx, response: raw };
 }

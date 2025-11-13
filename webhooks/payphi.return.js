@@ -51,7 +51,7 @@ module.exports = async (req, res) => {
     }
 
     const qc = await pool.query(
-      `SELECT cart_id, cart_ref, final_amount, payment_status, status, user_id
+      `SELECT cart_id, cart_ref, final_amount, payment_status, status, user_id, payment_txn_no
        FROM carts
        WHERE payment_ref = $1
        ORDER BY updated_at DESC
@@ -60,9 +60,10 @@ module.exports = async (req, res) => {
     );
     const c = qc.rows[0];
     if (c) {
+      const original = c.payment_txn_no || c.cart_ref;
       const st = await payphiService.status({
         merchantTxnNo: c.cart_ref,
-        originalTxnNo: c.cart_ref,
+        originalTxnNo: original,
         amount: c.final_amount,
       });
       success = st.success;

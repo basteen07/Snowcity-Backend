@@ -1,7 +1,7 @@
 const express = require('express');
 const router = require('express').Router();
 const { adminAuth } = require('../middleware/adminAuth');
-
+const { attachScopes } = require('../middleware/scopes');
 
 
 // Protect all admin routes
@@ -12,9 +12,13 @@ router.get('/', (req, res) => res.json({ admin: true, ok: true }));
 // Only mount bookings for now
 router.use('/bookings', require('./bookings.routes'));
 
+router.use(adminAuth, attachScopes);
 
+router.get('/', (req, res) => res.json({ admin: true, status: 'ok' }));
 // Mount sub-routes
 router.get('/', (req, res) => res.json({ admin: true, status: 'ok' }));
+
+router.use('/admins', require('./admins.routes'));
 
 router.use('/dashboard', require('./dashboard.routes'));
 router.use('/users', require('./users.routes'));

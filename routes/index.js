@@ -21,7 +21,9 @@ router.use('/banners', require('../user/routes/banners.routes'));
 router.use('/pages', require('./pages.routes'));
 router.use('/blogs', require('./blogs.routes'));
 router.use('/uploads', require('./uploads.routes'));
-
+router.use('/api', require('./combos.public'));
+router.use('/api', require('./gallery.public'));
+router.use('/api', require('./pages.public'));
 // Cart
 router.use('/cart', require('../user/routes/cart.routes'));
 

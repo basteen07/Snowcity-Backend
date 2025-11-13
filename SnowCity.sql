@@ -505,3 +505,46 @@ FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE INDEX idx_happy_hours_attraction_id ON happy_hours(attraction_id);
 
 COMMIT;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+BEGIN;
+-- Resource-scoped access for admins
+CREATE TABLE IF NOT EXISTS admin_access (
+  id            BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  user_id       BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+  resource_type VARCHAR(32) NOT NULL CHECK (resource_type IN ('attraction','combo','banner','page','blog','gallery')),
+  resource_id   BIGINT NOT NULL,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT uq_admin_access UNIQUE (user_id, resource_type, resource_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_admin_access_user_type ON admin_access(user_id, resource_type);
+CREATE INDEX IF NOT EXISTS idx_admin_access_type_id ON admin_access(resource_type, resource_id);
+
+-- updated_at trigger
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'trg_admin_access_updated_at') THEN
+    CREATE TRIGGER trg_admin_access_updated_at
+    BEFORE UPDATE ON admin_access
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+  END IF;
+END$$;
+COMMIT;

@@ -12,6 +12,7 @@ function mapCart(row) {
     final_amount: Number(row.final_amount),
     payment_status: row.payment_status,
     payment_mode: row.payment_mode,
+    payment_txn_no: row.payment_txn_no || null,
     payment_ref: row.payment_ref,
     status: row.status,
     created_at: row.created_at,
@@ -143,7 +144,25 @@ async function recomputeTotals(cart_id) {
   return mapCart(rows[0]);
 }
 
-async function setPayment(cart_id, { payment_status, payment_ref = null }) {
+async function setPayment(cart_id, { payment_status, payment_ref = null, payment_txn_no = undefined }) {
+  // If payment_txn_no is provided, attempt to update it (column may not exist in older DBs)
+  if (payment_txn_no !== undefined) {
+    try {
+      const { rows } = await pool.query(
+        `UPDATE carts
+         SET payment_status = $2,
+             payment_ref = COALESCE($3, payment_ref),
+             payment_txn_no = COALESCE($4, payment_txn_no),
+             updated_at = NOW()
+         WHERE cart_id = $1
+         RETURNING *`,
+        [cart_id, payment_status, payment_ref, payment_txn_no]
+      );
+      return mapCart(rows[0]);
+    } catch (e) {
+      // Fallback if column doesn't exist
+    }
+  }
   const { rows } = await pool.query(
     `UPDATE carts SET payment_status = $2, payment_ref = COALESCE($3, payment_ref), updated_at = NOW() WHERE cart_id = $1 RETURNING *`,
     [cart_id, payment_status, payment_ref]

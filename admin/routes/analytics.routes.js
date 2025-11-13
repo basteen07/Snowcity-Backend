@@ -1,68 +1,58 @@
+// admin/routes/analytics.routes.js
 const router = require('express').Router();
-const { requirePermissions, requireAnyPermission } = require('../middleware/permissionGuard');
+const { requireAnyPermission } = require('../middleware/permissionGuard');
 const adminModel = require('../models/admin.model');
 const PDFDocument = require('pdfkit');
 
-// Overview (matches frontend Admin endpoints)
+// ... existing routes (overview, trend, sales-trend, top-attractions)
+
 router.get(
-  '/overview',
+  '/attractions-breakdown',
   requireAnyPermission('analytics:read', 'dashboard:read'),
   async (req, res, next) => {
     try {
-      const { from = null, to = null, attraction_id = null } = req.query;
-      const data = await adminModel.getAdminOverview({ from, to, attraction_id: attraction_id ? Number(attraction_id) : null });
+      const { from = null, to = null } = req.query;
+      const limit = Math.min(parseInt(req.query.limit || '50', 10), 200);
+      const data = await adminModel.getAttractionBreakdown({ from, to, limit });
       res.json(data);
     } catch (err) { next(err); }
   }
 );
 
-// Trend (alias of sales-trend) with optional attraction filter
+// Daily is just trend with granularity=day
 router.get(
-  '/trend',
+  '/daily',
   requireAnyPermission('analytics:read', 'dashboard:read'),
   async (req, res, next) => {
     try {
-      const { from = null, to = null, granularity = 'day', attraction_id = null } = req.query;
-      const data = await adminModel.getSalesTrend({ from, to, granularity, attraction_id: attraction_id ? Number(attraction_id) : null });
+      const { from = null, to = null } = req.query;
+      const data = await adminModel.getSalesTrend({ from, to, granularity: 'day' });
       res.json(data);
     } catch (err) { next(err); }
   }
 );
 
-// Back-compat: sales-trend
+// Split data
 router.get(
-  '/sales-trend',
+  '/split',
   requireAnyPermission('analytics:read', 'dashboard:read'),
   async (req, res, next) => {
     try {
-      const { from = null, to = null, granularity = 'day', attraction_id = null } = req.query;
-      const data = await adminModel.getSalesTrend({ from, to, granularity, attraction_id: attraction_id ? Number(attraction_id) : null });
-      res.json(data);
+      const { from = null, to = null, group_by = 'payment_status' } = req.query;
+      const data = await adminModel.getSplitData({ from, to, group_by });
+      res.json({ group_by, data });
     } catch (err) { next(err); }
   }
 );
 
-router.get(
-  '/top-attractions',
-  requireAnyPermission('analytics:read', 'dashboard:read'),
-  async (req, res, next) => {
-    try {
-      const { from = null, to = null, attraction_id = null } = req.query;
-      const limit = Math.min(parseInt(req.query.limit || '10', 10), 50);
-      const data = await adminModel.getTopAttractions({ from, to, limit, attraction_id: attraction_id ? Number(attraction_id) : null });
-      res.json(data);
-    } catch (err) {
-      next(err);
-    }
-  }
-);
-
-// Export helpers
+// CSV export helpers (extend)
 function toCsv(rows, headers) {
   const escape = (v) => {
     if (v == null) return '';
-    const s = String(v);
-    if (s.includes(',') || s.includes('"') || s.includes('\n')) return '"' + s.replace(/"/g, '""') + '"';
+    let s = String(v);
+    if (/^[=+\-@]/.test(s)) s = "'" + s; // mitigate CSV injection
+    if (s.includes('"')) s = s.replace(/"/g, '""');
+    if (s.includes(',') || s.includes('\n')) s = `"${s}"`;
     return s;
   };
   const head = headers.map((h) => h.label).join(',');
@@ -70,81 +60,68 @@ function toCsv(rows, headers) {
   return head + '\n' + body + '\n';
 }
 
-async function getReportRows({ type = 'bookings', from = null, to = null, attraction_id = null }) {
+async function getReportRows({ type = 'bookings', from = null, to = null, attraction_id = null, group_by = 'payment_status' }) {
   switch (type) {
     case 'top-attractions':
       return await adminModel.getTopAttractions({ from, to, limit: 100, attraction_id });
     case 'trend':
+    case 'daily':
       return await adminModel.getSalesTrend({ from, to, granularity: 'day', attraction_id });
+    case 'attractions-breakdown':
+      return await adminModel.getAttractionBreakdown({ from, to, limit: 500 });
+    case 'split':
+      return (await adminModel.getSplitData({ from, to, group_by })) || [];
     case 'bookings':
     default:
       return await adminModel.getRecentBookings({ limit: 500, offset: 0, attraction_id });
   }
 }
 
-// CSV export
 router.get(
   '/report.csv',
   requireAnyPermission('analytics:read', 'dashboard:read'),
   async (req, res, next) => {
     try {
-      const { type = 'bookings', from = null, to = null, attraction_id = null } = req.query;
-      const rows = await getReportRows({ type, from, to, attraction_id: attraction_id ? Number(attraction_id) : null });
+      const { type = 'bookings', from = null, to = null, attraction_id = null, group_by = 'payment_status' } = req.query;
+      const rows = await getReportRows({ type, from, to, attraction_id: attraction_id ? Number(attraction_id) : null, group_by });
       let headers;
-      if (type === 'top-attractions') headers = [
-        { label: 'Attraction ID', get: (r) => r.attraction_id },
-        { label: 'Title', get: (r) => r.title },
-        { label: 'Bookings', get: (r) => r.bookings ?? r.total_bookings },
-        { label: 'Revenue', get: (r) => r.revenue ?? r.total_revenue },
-      ];
-      else if (type === 'trend') headers = [
-        { label: 'Bucket', get: (r) => r.bucket },
-        { label: 'Bookings', get: (r) => r.bookings },
-        { label: 'Revenue', get: (r) => r.revenue },
-      ];
-      else headers = [
-        { label: 'Booking Ref', get: (r) => r.booking_ref },
-        { label: 'User Email', get: (r) => r.user_email },
-        { label: 'Attraction', get: (r) => r.attraction_title },
-        { label: 'Amount', get: (r) => r.final_amount },
-        { label: 'Payment', get: (r) => r.payment_status },
-        { label: 'Created At', get: (r) => r.created_at },
-      ];
+
+      if (type === 'top-attractions' || type === 'attractions-breakdown') {
+        headers = [
+          { label: 'Attraction ID', get: (r) => r.attraction_id },
+          { label: 'Title', get: (r) => r.title },
+          { label: 'Bookings', get: (r) => r.bookings ?? r.total_bookings },
+          { label: 'People', get: (r) => r.people ?? r.total_people ?? '' },
+          { label: 'Revenue', get: (r) => r.revenue ?? r.total_revenue },
+        ];
+      } else if (type === 'trend' || type === 'daily') {
+        headers = [
+          { label: 'Bucket', get: (r) => r.bucket },
+          { label: 'Bookings', get: (r) => r.bookings },
+          { label: 'People', get: (r) => r.people ?? '' },
+          { label: 'Revenue', get: (r) => r.revenue },
+        ];
+      } else if (type === 'split') {
+        headers = [
+          { label: 'Key', get: (r) => r.key },
+          { label: 'Bookings', get: (r) => r.bookings },
+          { label: 'People', get: (r) => r.people ?? '' },
+          { label: 'Revenue', get: (r) => r.revenue },
+        ];
+      } else {
+        headers = [
+          { label: 'Booking Ref', get: (r) => r.booking_ref },
+          { label: 'User Email', get: (r) => r.user_email },
+          { label: 'Attraction', get: (r) => r.attraction_title },
+          { label: 'Amount', get: (r) => r.final_amount },
+          { label: 'Payment', get: (r) => r.payment_status },
+          { label: 'Created At', get: (r) => r.created_at },
+        ];
+      }
       const csv = toCsv(rows, headers);
       res.setHeader('Content-Type', 'text/csv');
       res.setHeader('Content-Disposition', `attachment; filename="report_${type}.csv"`);
       res.send(csv);
-    } catch (err) { next(err); }
-  }
-);
-
-// PDF export (simple tabular)
-router.get(
-  '/report.pdf',
-  requireAnyPermission('analytics:read', 'dashboard:read'),
-  async (req, res, next) => {
-    try {
-      const { type = 'bookings', from = null, to = null, attraction_id = null } = req.query;
-      const rows = await getReportRows({ type, from, to, attraction_id: attraction_id ? Number(attraction_id) : null });
-      const doc = new PDFDocument({ size: 'A4', margin: 36 });
-      res.setHeader('Content-Type', 'application/pdf');
-      res.setHeader('Content-Disposition', `attachment; filename="report_${type}.pdf"`);
-      doc.pipe(res);
-      doc.fontSize(16).text(`SnowCity Report — ${type.replace(/-/g,' ')}`, { align: 'left' });
-      doc.moveDown();
-      doc.fontSize(10);
-      const renderRow = (vals) => { doc.text(vals.join('  \t  ')); };
-      if (type === 'top-attractions') {
-        renderRow(['Attraction ID','Title','Bookings','Revenue']);
-        rows.forEach(r => renderRow([String(r.attraction_id), r.title, String(r.bookings ?? r.total_bookings), String(r.revenue ?? r.total_revenue)]));
-      } else if (type === 'trend') {
-        renderRow(['Bucket','Bookings','Revenue']);
-        rows.forEach(r => renderRow([String(r.bucket), String(r.bookings), String(r.revenue)]));
-      } else {
-        renderRow(['Booking Ref','User Email','Attraction','Amount','Payment','Created At']);
-        rows.forEach(r => renderRow([r.booking_ref, r.user_email || '', r.attraction_title || '', String(r.final_amount || 0), r.payment_status || '', String(r.created_at)]));
-      }
-      doc.end();
     } catch (err) { next(err); }
   }
 );
