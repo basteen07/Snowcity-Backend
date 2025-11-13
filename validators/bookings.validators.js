@@ -3,6 +3,7 @@ const { body, param } = require('express-validator');
 const createBookingValidator = [
   body('attraction_id').isInt({ min: 1 }).toInt(),
   body('slot_id').optional({ nullable: true }).isInt({ min: 1 }).toInt(),
+  body('quantity').optional().isInt({ min: 1 }).toInt(),
   body('booking_date').optional().isISO8601().withMessage('booking_date must be YYYY-MM-DD'),
   body('addons').optional({ nullable: true }).isArray(),
   body('addons.*.addon_id').isInt({ min: 1 }).toInt(),

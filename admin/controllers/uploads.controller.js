@@ -1,5 +1,6 @@
 const logger = require('../../config/logger');
 const { saveToLocal } = require('../../utils/uploader');
+const mediaModel = require('../../models/mediaFiles.model');
 
 function parseBoolean(value, defaultValue = true) {
   if (value === undefined || value === null || value === '') return defaultValue;
@@ -29,7 +30,17 @@ exports.uploadSingleImage = async (req, res, next) => {
 
     const result = await saveToLocal(req.file, { folder, optimize });
 
+    const media = await mediaModel.createMedia({
+      url_path: result.urlPath,
+      relative_path: result.relativePath,
+      filename: result.filename,
+      size: result.size,
+      mimetype: result.mimetype,
+      folder: result.folder,
+    });
+
     return res.status(201).json({
+      media_id: media?.media_id,
       url: result.urlPath,
       path: result.relativePath,
       filename: result.filename,

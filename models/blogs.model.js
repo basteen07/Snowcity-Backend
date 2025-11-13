@@ -9,18 +9,24 @@ function mapBlog(row) {
     content: row.content,
     image_url: row.image_url,
     author: row.author,
+    meta_title: row.meta_title,
+    meta_description: row.meta_description,
+    meta_keywords: row.meta_keywords,
+    section_type: row.section_type,
+    section_ref_id: row.section_ref_id,
+    gallery: row.gallery,
     active: row.active,
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
 }
 
-async function createBlog({ title, slug, content = null, image_url = null, author = null, active = true }) {
+async function createBlog({ title, slug, content = null, image_url = null, author = null, meta_title = null, meta_description = null, meta_keywords = null, section_type = 'none', section_ref_id = null, gallery = [], active = true }) {
   const { rows } = await pool.query(
-    `INSERT INTO blogs (title, slug, content, image_url, author, active)
-     VALUES ($1, $2, $3, $4, $5, $6)
+    `INSERT INTO blogs (title, slug, content, image_url, author, meta_title, meta_description, meta_keywords, section_type, section_ref_id, gallery, active)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, COALESCE($11, '[]'::jsonb), $12)
      RETURNING *`,
-    [title, slug, content, image_url, author, active]
+    [title, slug, content, image_url, author, meta_title, meta_description, meta_keywords, section_type, section_ref_id, Array.isArray(gallery) ? JSON.stringify(gallery) : gallery, active]
   );
   return mapBlog(rows[0]);
 }

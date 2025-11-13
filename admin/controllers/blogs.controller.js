@@ -57,3 +57,25 @@ exports.deleteBlog = async (req, res, next) => {
     next(err);
   }
 };
+
+exports.previewBlog = async (req, res, next) => {
+  try {
+    const p = req.body || {};
+    const out = {
+      title: p.title || '',
+      slug: p.slug || '',
+      content: p.content || null,
+      image_url: p.image_url || null,
+      author: p.author || null,
+      meta_title: p.meta_title || null,
+      meta_description: p.meta_description || null,
+      meta_keywords: p.meta_keywords || null,
+      section_type: p.section_type || 'none',
+      section_ref_id: p.section_ref_id || null,
+      gallery: Array.isArray(p.gallery) ? p.gallery : [],
+      active: p.active !== undefined ? !!p.active : true,
+      preview: true,
+    };
+    res.json(out);
+  } catch (err) { next(err); }
+};

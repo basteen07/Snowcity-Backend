@@ -16,7 +16,7 @@ function sanitizeGranularity(granularity) {
  * - pending_payments
  * - unique_users
  */
-async function getDashboardSummary({ from = null, to = null } = {}) {
+async function getDashboardSummary({ from = null, to = null, attraction_id = null } = {}) {
   const sql = `
     SELECT
       COUNT(*) FILTER (WHERE b.created_at >= COALESCE($1::timestamptz, NOW() - INTERVAL '30 days')
@@ -31,16 +31,17 @@ async function getDashboardSummary({ from = null, to = null } = {}) {
       COUNT(DISTINCT b.user_id) FILTER (WHERE b.created_at >= COALESCE($1::timestamptz, NOW() - INTERVAL '30 days')
                        AND b.created_at < COALESCE($2::timestamptz, NOW())) AS unique_users
     FROM bookings b
-    WHERE b.booking_status <> 'Cancelled';
+    WHERE b.booking_status <> 'Cancelled'
+      AND ($3::bigint IS NULL OR b.attraction_id = $3::bigint);
   `;
-  const { rows } = await pool.query(sql, [from, to]);
+  const { rows } = await pool.query(sql, [from, to, attraction_id]);
   return rows[0];
 }
 
 /**
  * Top attractions by bookings and revenue within range
  */
-async function getTopAttractions({ from = null, to = null, limit = 10 } = {}) {
+async function getTopAttractions({ from = null, to = null, limit = 10, attraction_id = null } = {}) {
   const sql = `
     SELECT
       a.attraction_id,
@@ -52,11 +53,12 @@ async function getTopAttractions({ from = null, to = null, limit = 10 } = {}) {
     WHERE b.booking_status <> 'Cancelled'
       AND b.created_at >= COALESCE($1::timestamptz, NOW() - INTERVAL '30 days')
       AND b.created_at <  COALESCE($2::timestamptz, NOW())
+      AND ($3::bigint IS NULL OR b.attraction_id = $3::bigint)
     GROUP BY a.attraction_id, a.title
     ORDER BY bookings DESC, revenue DESC
-    LIMIT $3;
+    LIMIT $4;
   `;
-  const { rows } = await pool.query(sql, [from, to, limit]);
+  const { rows } = await pool.query(sql, [from, to, attraction_id, limit]);
   return rows;
 }
 
@@ -64,7 +66,7 @@ async function getTopAttractions({ from = null, to = null, limit = 10 } = {}) {
  * Time-series trend of bookings and revenue
  * granularity: 'day' | 'week' | 'month'
  */
-async function getSalesTrend({ from = null, to = null, granularity = 'day' } = {}) {
+async function getSalesTrend({ from = null, to = null, granularity = 'day', attraction_id = null } = {}) {
   const g = sanitizeGranularity(granularity);
   const sql = `
     SELECT
@@ -75,17 +77,18 @@ async function getSalesTrend({ from = null, to = null, granularity = 'day' } = {
     WHERE b.booking_status <> 'Cancelled'
       AND b.created_at >= COALESCE($1::timestamptz, NOW() - INTERVAL '30 days')
       AND b.created_at <  COALESCE($2::timestamptz, NOW())
+      AND ($3::bigint IS NULL OR b.attraction_id = $3::bigint)
     GROUP BY bucket
     ORDER BY bucket ASC;
   `;
-  const { rows } = await pool.query(sql, [from, to]);
+  const { rows } = await pool.query(sql, [from, to, attraction_id]);
   return rows;
 }
 
 /**
  * Latest bookings for admin dashboard table
  */
-async function getRecentBookings({ limit = 20, offset = 0 } = {}) {
+async function getRecentBookings({ limit = 20, offset = 0, attraction_id = null } = {}) {
   const sql = `
     SELECT
       b.booking_id, b.booking_ref, b.user_id, b.attraction_id, b.slot_id,
@@ -96,26 +99,28 @@ async function getRecentBookings({ limit = 20, offset = 0 } = {}) {
     FROM bookings b
     LEFT JOIN users u ON u.user_id = b.user_id
     LEFT JOIN attractions a ON a.attraction_id = b.attraction_id
+    WHERE ($1::bigint IS NULL OR b.attraction_id = $1::bigint)
     ORDER BY b.created_at DESC
-    LIMIT $1 OFFSET $2;
+    LIMIT $2 OFFSET $3;
   `;
-  const { rows } = await pool.query(sql, [limit, offset]);
+  const { rows } = await pool.query(sql, [attraction_id, limit, offset]);
   return rows;
 }
 
 /**
  * Count bookings by booking_status for a quick status breakdown
  */
-async function getBookingCountsByStatus({ from = null, to = null } = {}) {
+async function getBookingCountsByStatus({ from = null, to = null, attraction_id = null } = {}) {
   const sql = `
     SELECT b.booking_status, COUNT(*)::int AS count
     FROM bookings b
     WHERE b.created_at >= COALESCE($1::timestamptz, NOW() - INTERVAL '30 days')
       AND b.created_at <  COALESCE($2::timestamptz, NOW())
+      AND ($3::bigint IS NULL OR b.attraction_id = $3::bigint)
     GROUP BY b.booking_status
     ORDER BY b.booking_status;
   `;
-  const { rows } = await pool.query(sql, [from, to]);
+  const { rows } = await pool.query(sql, [from, to, attraction_id]);
   return rows;
 }
 
@@ -234,12 +239,12 @@ async function getUserPermissions(userId) {
 /**
  * Admin overview: combine several metrics
  */
-async function getAdminOverview({ from = null, to = null } = {}) {
+async function getAdminOverview({ from = null, to = null, attraction_id = null } = {}) {
   const [summary, statusBreakdown, topAttractions, trend] = await Promise.all([
-    getDashboardSummary({ from, to }),
-    getBookingCountsByStatus({ from, to }),
-    getTopAttractions({ from, to, limit: 5 }),
-    getSalesTrend({ from, to, granularity: 'day' }),
+    getDashboardSummary({ from, to, attraction_id }),
+    getBookingCountsByStatus({ from, to, attraction_id }),
+    getTopAttractions({ from, to, attraction_id, limit: 5 }),
+    getSalesTrend({ from, to, attraction_id, granularity: 'day' }),
   ]);
 
   return {

@@ -30,11 +30,13 @@ router.use('/slots', require('./slots.routes'));
 router.use('/bookings', require('./bookings.routes'));
 router.use('/addons', require('./addons.routes'));
 router.use('/combos', require('./combos.routes'));
+router.use('/combo-slots', require('./comboSlots.routes'));
 router.use('/coupons', require('./coupons.routes'));
 router.use('/offers', require('./offers.routes'));
 router.use('/banners', require('./banners.routes'));
 router.use('/pages', require('./pages.routes'));
 router.use('/blogs', require('./blogs.routes'));
+router.use('/gallery', require('./gallery.routes'));
 router.use('/analytics', require('./analytics.routes'));
 router.use('/uploads', require('./uploads.routes'));
 

@@ -3,6 +3,7 @@ const bookingsModel = require('../../models/bookings.model');
 const bookingService = require('../../services/bookingService');
 const payphiService = require('../../services/payphiService');
 const { createApiLog } = require('../../models/apiLogs.model');
+const ticketService = require('../../services/ticketService');
 
 async function listBookings(req, res, next) {
   try {
@@ -93,6 +94,7 @@ async function createManualBooking(req, res, next) {
       user_id = null,
       attraction_id,
       slot_id = null,
+      quantity = 1,
       addons = [],
       coupon_code = null,
       payment_mode = 'Offline',
@@ -104,6 +106,7 @@ async function createManualBooking(req, res, next) {
       user_id,
       attraction_id,
       slot_id,
+      quantity,
       addons,
       coupon_code,
       payment_mode,
@@ -115,6 +118,12 @@ async function createManualBooking(req, res, next) {
         payment_status: 'Completed',
         payment_ref: booking.booking_ref,
       });
+      try {
+        const urlPath = await ticketService.generateTicket(booking.booking_id);
+        await bookingsModel.updateBooking(booking.booking_id, { ticket_pdf: urlPath });
+      } catch (e) {
+        // non-fatal
+      }
     }
 
     res.status(201).json(booking);
@@ -149,6 +158,14 @@ async function updateBooking(req, res, next) {
 
     const updated = await bookingsModel.updateBooking(id, payload);
     if (!updated) return res.status(404).json({ error: 'Booking not found' });
+    if (payload.payment_status === 'Completed') {
+      try {
+        const urlPath = await ticketService.generateTicket(id);
+        await bookingsModel.updateBooking(id, { ticket_pdf: urlPath });
+      } catch (e) {
+        // non-fatal
+      }
+    }
     res.json(updated);
   } catch (err) {
     next(err);

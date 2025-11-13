@@ -1,7 +1,7 @@
 const router = require('express').Router();
-const ctrl = require('../user/controllers/bookings.controller');
-const { requireAuth, optionalAuth } = require('../middlewares/authMiddleware');
-const { paymentLimiter } = require('../middlewares/rateLimiter');
+const ctrl = require('../controllers/bookings.controller');
+const { requireAuth, optionalAuth } = require('../../middlewares/authMiddleware');
+const { paymentLimiter } = require('../../middlewares/rateLimiter');
 
 router.get('/', requireAuth, ctrl.listMyBookings);
 router.get('/:id', requireAuth, ctrl.getMyBookingById);

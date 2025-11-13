@@ -8,4 +8,7 @@ router.post('/', requirePermissions('blogs:write'), ctrl.createBlog);
 router.put('/:id', requirePermissions('blogs:write'), ctrl.updateBlog);
 router.delete('/:id', requirePermissions('blogs:write'), ctrl.deleteBlog);
 
+// Preview content (no persistence)
+router.post('/preview', requirePermissions('blogs:write'), ctrl.previewBlog);
+
 module.exports = router;

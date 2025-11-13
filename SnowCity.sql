@@ -184,6 +184,7 @@ CREATE TABLE attraction_slots (
     start_time      TIME NOT NULL,
     end_time        TIME NOT NULL,
     capacity        INT NOT NULL CHECK (capacity >= 0),
+    price           NUMERIC(10,2) DEFAULT NULL CHECK (price IS NULL OR price >= 0),
     available       BOOLEAN NOT NULL DEFAULT TRUE,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -206,6 +207,7 @@ CREATE TABLE bookings (
     user_id         BIGINT REFERENCES users(user_id) ON DELETE SET NULL,
     attraction_id   BIGINT NOT NULL REFERENCES attractions(attraction_id) ON DELETE RESTRICT,
     slot_id         BIGINT REFERENCES attraction_slots(slot_id) ON DELETE SET NULL,
+    quantity        INT NOT NULL DEFAULT 1 CHECK (quantity >= 1),
     booking_date    DATE NOT NULL DEFAULT CURRENT_DATE,
     booking_time    TIME NOT NULL DEFAULT CURRENT_TIME,
     total_amount    NUMERIC(10,2) NOT NULL CHECK (total_amount >= 0),
@@ -376,8 +378,8 @@ CREATE TABLE banners (
     mobile_image         VARCHAR(255),
     title                VARCHAR(100),
     description          TEXT,
-    linked_attraction_id BIGINT REFERENCES attractions(attraction_id) ON DELETE SET NULL,
-    linked_offer_id      BIGINT REFERENCES offers(offer_id) ON DELETE SET NULL,
+    linked_attraction_id BIGINT REFERENCES attractions(attraction_id) ON DELETE CASCADE,
+    linked_offer_id      BIGINT REFERENCES offers(offer_id) ON DELETE CASCADE,
     active               BOOLEAN NOT NULL DEFAULT TRUE,
     created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -389,6 +391,21 @@ FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
 CREATE INDEX idx_banners_linked_attraction_id ON banners(linked_attraction_id);
 CREATE INDEX idx_banners_linked_offer_id ON banners(linked_offer_id);
+CREATE INDEX idx_banners_active ON banners(active);
+
+-- MEDIA FILES (for uploads with ID-based retrieval)
+CREATE TABLE media_files (
+    media_id       BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    url_path       VARCHAR(255) NOT NULL,
+    relative_path  VARCHAR(255) NOT NULL,
+    filename       VARCHAR(255) NOT NULL,
+    size           BIGINT NOT NULL,
+    mimetype       VARCHAR(100) NOT NULL,
+    folder         VARCHAR(100),
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_media_files_folder ON media_files(folder);
 
 -- ANALYTICS
 CREATE TABLE analytics (

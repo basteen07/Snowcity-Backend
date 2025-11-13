@@ -31,26 +31,49 @@ exports.createBooking = async (req, res, next) => {
     // If user is logged in, create booking directly
     // If not logged in, booking will be created with user_id = null (guest booking)
     // User must verify OTP first, then booking will be assigned to user
-    const { 
-      attraction_id, 
-      slot_id = null, 
-      booking_date = null, 
-      addons = [], 
-      coupon_code = null, 
-      payment_mode = 'Online'
+    const {
+      attraction_id = null,
+      combo_id = null,
+      slot_id = null,
+      combo_slot_id = null,
+      booking_date = null,
+      booking_time = null,
+      quantity = 1,
+      addons = [],
+      coupon_code = null,
+      payment_mode = 'Online',
     } = req.body || {};
-    
-    if (!attraction_id) return res.status(400).json({ error: 'attraction_id is required' });
-    
-    const booking = await bookingService.createBooking({
-      user_id: userId, // null if guest, will be set after OTP verification
-      attraction_id, 
-      slot_id, 
-      addons, 
-      coupon_code, 
-      payment_mode, 
-      booking_date,
-    });
+
+    if (!attraction_id && !combo_id) {
+      return res.status(400).json({ error: 'attraction_id or combo_id is required' });
+    }
+
+    let booking;
+    if (combo_id) {
+      booking = await bookingService.createComboBooking({
+        user_id: userId,
+        combo_id,
+        combo_slot_id,
+        booking_date,
+        booking_time,
+        quantity,
+        addons,
+        coupon_code,
+        payment_mode,
+      });
+    } else {
+      booking = await bookingService.createBooking({
+        user_id: userId,
+        attraction_id,
+        slot_id,
+        booking_date,
+        booking_time,
+        quantity,
+        addons,
+        coupon_code,
+        payment_mode,
+      });
+    }
     res.status(201).json(booking);
   } catch (err) { next(err); }
 };
@@ -116,10 +139,16 @@ exports.initiatePayPhiPayment = async (req, res, next) => {
     if (!userId) return res.status(401).json({ error: 'Unauthorized. Please verify OTP first.' });
 
     const id = Number(req.params.id);
-    const b = await bookingsModel.getBookingById(id);
+    let b = await bookingsModel.getBookingById(id);
     if (!b) return res.status(404).json({ error: 'Booking not found' });
-    
-    // Ensure booking belongs to logged-in user (after OTP verification)
+
+    // If this is a guest booking, auto-assign it to the logged-in user to avoid OTP flow
+    if (!b.user_id) {
+      await bookingsModel.updateBooking(id, { user_id: userId });
+      b = await bookingsModel.getBookingById(id);
+    }
+
+    // Ensure booking belongs to logged-in user
     if (b.user_id !== userId) {
       return res.status(403).json({ error: 'Forbidden: This booking does not belong to you' });
     }

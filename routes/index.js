@@ -11,17 +11,23 @@ router.use('/auth', require('./auth.routes'));
 router.use('/users', require('./users.routes'));
 router.use('/attractions', require('./attractions.routes'));
 router.use('/slots', require('./slots.routes'));
-router.use('/bookings', require('./bookings.routes'));
+router.use('/bookings', require('../user/routes/bookings.routes'));
 router.use('/addons', require('./addons.routes'));
 router.use('/combos', require('./combos.routes'));
+router.use('/combo-slots', require('./comboSlots.routes'));
 router.use('/coupons', require('./coupons.routes'));
 router.use('/offers', require('./offers.routes'));
 router.use('/banners', require('../user/routes/banners.routes'));
 router.use('/pages', require('./pages.routes'));
 router.use('/blogs', require('./blogs.routes'));
+router.use('/uploads', require('./uploads.routes'));
+
+// Cart
+router.use('/cart', require('../user/routes/cart.routes'));
 
 // ...
 router.use('/payments', require('./payments.routes'));
+router.use('/webhooks', require('./webhooks.routes'));
 // Admin routes (protected inside admin/router)
 router.use('/admin', require('../admin/routes'));
 

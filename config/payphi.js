@@ -5,7 +5,8 @@ const logger = require('./logger');
 const BASE = (process.env.PAYPHI_BASE_URL || 'https://qa.phicommerce.com/pg').replace(/\/+$/, '');
 const SECRET = process.env.PAYPHI_SECRET_KEY || '';
 const MERCHANT_ID = process.env.PAYPHI_MERCHANT_ID || '';
-const RETURN_URL = process.env.PAYPHI_RETURN_URL || '';
+const APP_URL = process.env.APP_URL || 'http://localhost:4000';
+const RETURN_URL = process.env.PAYPHI_RETURN_URL || `${APP_URL}/api/webhooks/payphi/return`;
 
 const httpV2 = createHttpClient({ baseURL: `${BASE}/api/v2`, timeout: 20000 });
 const http = createHttpClient({ baseURL: `${BASE}/api`, timeout: 20000 });

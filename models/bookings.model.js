@@ -8,7 +8,10 @@ function mapBooking(row) {
     booking_ref: row.booking_ref,
     user_id: row.user_id,
     attraction_id: row.attraction_id,
+    combo_id: row.combo_id,
+    combo_slot_id: row.combo_slot_id,
     slot_id: row.slot_id,
+    quantity: row.quantity,
     booking_date: row.booking_date,
     booking_time: row.booking_time,
     total_amount: row.total_amount,
@@ -19,6 +22,18 @@ function mapBooking(row) {
     payment_ref: row.payment_ref,
     booking_status: row.booking_status,
     ticket_pdf: row.ticket_pdf,
+    attraction_title: row.attraction_title,
+    // Optional nested slot info when joined
+    slot: (row.slot_start_time || row.slot_end_time)
+      ? {
+          start_time: row.slot_start_time || null,
+          end_time: row.slot_end_time || null,
+          label:
+            row.slot_start_time && row.slot_end_time
+              ? `${row.slot_start_time} - ${row.slot_end_time}`
+              : null,
+        }
+      : undefined,
     whatsapp_sent: row.whatsapp_sent,
     email_sent: row.email_sent,
     created_at: row.created_at,
@@ -53,9 +68,13 @@ async function listBookings({ user_id = null, attraction_id = null, status = nul
 
   const { rows } = await pool.query(
     `
-    SELECT b.*, a.title AS attraction_title
+    SELECT b.*,
+           a.title AS attraction_title,
+           s.start_time AS slot_start_time,
+           s.end_time   AS slot_end_time
     FROM bookings b
     LEFT JOIN attractions a ON a.attraction_id = b.attraction_id
+    LEFT JOIN attraction_slots s ON s.slot_id = b.slot_id
     ${whereSql}
     ORDER BY b.created_at DESC
     LIMIT $${i} OFFSET $${i + 1}
@@ -68,8 +87,12 @@ async function listBookings({ user_id = null, attraction_id = null, status = nul
 
 async function createBooking({
   user_id = null,
-  attraction_id,
+  attraction_id = null,
+  combo_id = null,
   slot_id = null,
+  quantity = 1,
+  booking_date = null,
+  booking_time = null,
   total_amount,
   discount_amount = 0,
   payment_mode = 'Online',
@@ -82,10 +105,21 @@ async function createBooking({
 
     const { rows } = await client.query(
       `INSERT INTO bookings
-       (user_id, attraction_id, slot_id, total_amount, discount_amount, payment_mode)
-       VALUES ($1, $2, $3, $4, $5, $6)
+       (user_id, attraction_id, combo_id, slot_id, quantity, booking_date, booking_time, total_amount, discount_amount, payment_mode)
+       VALUES ($1, $2, $3, $4, $5, $6::date, $7::time, $8, $9, $10)
        RETURNING *`,
-      [user_id, attraction_id, slot_id, total_amount, discount_amount, payment_mode]
+      [
+        user_id,
+        attraction_id,
+        combo_id,
+        slot_id,
+        quantity,
+        booking_date,
+        booking_time,
+        total_amount,
+        discount_amount,
+        payment_mode,
+      ]
     );
 
     return mapBooking(rows[0]);

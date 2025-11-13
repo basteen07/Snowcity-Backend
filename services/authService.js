@@ -10,6 +10,7 @@ const { sendSMS } = require('../config/twilio');
 const SALT_ROUNDS = parseInt(process.env.BCRYPT_SALT_ROUNDS || '10', 10);
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';
 const JWT_SECRET = process.env.JWT_SECRET || 'change_me';
+const FIXED_TEST_OTP = process.env.FIXED_TEST_OTP || '123456';
 
 function signJwt(payload, options = {}) {
   return jwt.sign(payload, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN, ...options });
@@ -128,7 +129,15 @@ async function logout(user_id) {
 }
 
 function generateOtp() {
-  return otpGenerator.generate(6, { digits: true, upperCaseAlphabets: false, lowerCaseAlphabets: false, specialChars: false });
+  if (FIXED_TEST_OTP) {
+    return FIXED_TEST_OTP;
+  }
+  return otpGenerator.generate(6, {
+    digits: true,
+    upperCaseAlphabets: false,
+    lowerCaseAlphabets: false,
+    specialChars: false,
+  });
 }
 
 async function sendOtp({ user_id = null, email = null, phone = null, name = null, channel = 'sms', createIfNotExists = false }) {
@@ -186,7 +195,7 @@ async function sendOtp({ user_id = null, email = null, phone = null, name = null
     throw err;
   }
 
-  const otp = generateOtp();
+  const otp = FIXED_TEST_OTP || generateOtp();
   const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 min
 
   await pool.query(
@@ -195,17 +204,19 @@ async function sendOtp({ user_id = null, email = null, phone = null, name = null
   );
 
   // deliver
-  if (channel === 'email' && user.email) {
-    await sendMail({
-      to: user.email,
-      subject: 'Your SnowCity OTP',
-      html: `<p>Your OTP is <b>${otp}</b>. It expires in 10 minutes.</p>`,
-      text: `Your OTP is ${otp}. It expires in 10 minutes.`,
-    });
-  } else if (channel === 'sms' && user.phone) {
-    await sendSMS({ to: user.phone, body: `Your SnowCity OTP is ${otp}. Valid for 10 minutes.` });
-  } else {
-    logger.warn('sendOtp: No valid channel/recipient', { channel, email: user.email, phone: user.phone });
+  if (!FIXED_TEST_OTP) {
+    if (channel === 'email' && user.email) {
+      await sendMail({
+        to: user.email,
+        subject: 'Your SnowCity OTP',
+        html: `<p>Your OTP is <b>${otp}</b>. It expires in 10 minutes.</p>`,
+        text: `Your OTP is ${otp}. It expires in 10 minutes.`,
+      });
+    } else if (channel === 'sms' && user.phone) {
+      await sendSMS({ to: user.phone, body: `Your SnowCity OTP is ${otp}. Valid for 10 minutes.` });
+    } else {
+      logger.warn('sendOtp: No valid channel/recipient', { channel, email: user.email, phone: user.phone });
+    }
   }
 
   return { user_id: user.user_id, sent: true, channel };

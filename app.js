@@ -27,7 +27,14 @@ app.use(hpp());
 app.use(cors(corsOptions)); // ← FIXED: BEFORE ROUTES!
 
 // Serve uploaded assets
-app.use('/uploads', express.static(path.resolve(__dirname, 'uploads')));
+app.use(
+  '/uploads',
+  (req, res, next) => {
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+    next();
+  },
+  express.static(path.resolve(__dirname, 'uploads'))
+);
 
 // HTTP logging via morgan -> winston
 app.use(

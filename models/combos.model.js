@@ -12,7 +12,16 @@ async function createCombo({ attraction_1_id, attraction_2_id, combo_price, disc
 
 async function getComboById(combo_id) {
   const { rows } = await pool.query(
-    `SELECT c.*, a1.title AS attraction_1_title, a2.title AS attraction_2_title
+    `SELECT
+        c.*,
+        a1.title AS attraction_1_title,
+        a1.image_url AS attraction_1_image,
+        a1.slug AS attraction_1_slug,
+        a1.base_price AS attraction_1_price,
+        a2.title AS attraction_2_title,
+        a2.image_url AS attraction_2_image,
+        a2.slug AS attraction_2_slug,
+        a2.base_price AS attraction_2_price
      FROM combos c
      JOIN attractions a1 ON a1.attraction_id = c.attraction_1_id
      JOIN attractions a2 ON a2.attraction_id = c.attraction_2_id
@@ -32,7 +41,16 @@ async function listCombos({ active = null } = {}) {
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
   const { rows } = await pool.query(
     `
-    SELECT c.*, a1.title AS attraction_1_title, a2.title AS attraction_2_title
+    SELECT
+      c.*,
+      a1.title AS attraction_1_title,
+      a1.image_url AS attraction_1_image,
+      a1.slug AS attraction_1_slug,
+      a1.base_price AS attraction_1_price,
+      a2.title AS attraction_2_title,
+      a2.image_url AS attraction_2_image,
+      a2.slug AS attraction_2_slug,
+      a2.base_price AS attraction_2_price
     FROM combos c
     JOIN attractions a1 ON a1.attraction_id = c.attraction_1_id
     JOIN attractions a2 ON a2.attraction_id = c.attraction_2_id

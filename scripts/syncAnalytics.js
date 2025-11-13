@@ -28,7 +28,7 @@ async function processDay(reportDate) {
     SELECT
       b.attraction_id,
       COUNT(*)::int AS total_bookings,
-      COUNT(*)::int AS total_people, -- no 'quantity' column; using bookings count as proxy
+      COALESCE(SUM(b.quantity), 0)::int AS total_people,
       COALESCE(SUM(CASE WHEN b.payment_status = 'Completed' THEN b.final_amount ELSE 0 END), 0)::numeric AS total_revenue
     FROM bookings b
     WHERE b.booking_status <> 'Cancelled'

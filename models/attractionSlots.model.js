@@ -49,17 +49,44 @@ async function createSlot(payload) {
     start_time,
     end_time,
     capacity,
-    available = true,
+    price: rawPrice = null,
+    available: rawAvailable = true,
   } = payload;
 
-  const { rows } = await pool.query(
-    `INSERT INTO attraction_slots
-     (attraction_id, start_date, end_date, start_time, end_time, capacity, available)
-     VALUES ($1, $2::date, $3::date, $4::time, $5::time, $6, $7)
-     RETURNING *`,
-    [attraction_id, start_date, end_date, start_time, end_time, capacity, available]
-  );
-  return rows[0];
+  // sanitize inputs
+  const aid = Number(attraction_id);
+  const cap = Number(capacity);
+  let price = rawPrice;
+  if (price === '' || price === undefined || price === null) price = null;
+  else {
+    const n = Number(price);
+    price = Number.isNaN(n) ? null : n;
+  }
+  const available = rawAvailable === 'false' ? false : Boolean(rawAvailable);
+
+  try {
+    const { rows } = await pool.query(
+      `INSERT INTO attraction_slots
+       (attraction_id, start_date, end_date, start_time, end_time, capacity, price, available)
+       VALUES ($1, $2::date, $3::date, $4::time, $5::time, $6, $7, $8)
+       RETURNING *`,
+      [aid, start_date, end_date, start_time, end_time, cap, price, available]
+    );
+    return rows[0];
+  } catch (err) {
+    // Fallback if 'price' column does not exist in the current schema
+    if (err && (err.code === '42703' || /column\s+"?price"?\s+does not exist/i.test(String(err.message)))) {
+      const { rows } = await pool.query(
+        `INSERT INTO attraction_slots
+         (attraction_id, start_date, end_date, start_time, end_time, capacity, available)
+         VALUES ($1, $2::date, $3::date, $4::time, $5::time, $6, $7)
+         RETURNING *`,
+        [aid, start_date, end_date, start_time, end_time, cap, available]
+      );
+      return rows[0];
+    }
+    throw err;
+  }
 }
 
 async function updateSlot(slot_id, fields = {}) {
@@ -69,10 +96,22 @@ async function updateSlot(slot_id, fields = {}) {
   const sets = [];
   const params = [];
   entries.forEach(([k, v], idx) => {
+    let val = v;
+    if (k === 'price') {
+      if (val === '' || val === null || val === undefined) val = null;
+      else {
+        const n = Number(val);
+        val = Number.isNaN(n) ? null : n;
+      }
+    } else if (k === 'capacity' || k === 'attraction_id') {
+      val = Number(v);
+    } else if (k === 'available') {
+      val = v === 'false' ? false : Boolean(v);
+    }
     const cast =
       ['start_date', 'end_date'].includes(k) ? '::date' : ['start_time', 'end_time'].includes(k) ? '::time' : '';
     sets.push(`${k} = $${idx + 1}${cast}`);
-    params.push(v);
+    params.push(val);
   });
   params.push(slot_id);
 
@@ -91,22 +130,19 @@ async function deleteSlot(slot_id) {
 }
 
 async function slotOverlapExists({ attraction_id, start_date, end_date, start_time, end_time, exclude_slot_id = null }) {
-  const params = [attraction_id, start_time, end_time];
-  let sql = `
-    SELECT 1
-    FROM attraction_slots
-    WHERE attraction_id = $1
-      AND start_time < $3::time
-      AND end_time > $2::time
-  `;
+  const params = [];
+  let i = 1;
+  let sql = `SELECT 1 FROM attraction_slots WHERE attraction_id = $${i++}`;
+  params.push(Number(attraction_id));
+  sql += ` AND start_time < $${i++}::time`;
+  params.push(end_time);
+  sql += ` AND end_time > $${i++}::time`;
+  params.push(start_time);
   if (exclude_slot_id) {
-    sql += ` AND slot_id <> $4`;
-    params.push(exclude_slot_id);
+    sql += ` AND slot_id <> $${i++}`;
+    params.push(Number(exclude_slot_id));
   }
-  // Date window overlap
-  sql += `
-    AND NOT ($5::date > end_date OR $6::date < start_date)
-  `;
+  sql += ` AND NOT ($${i}::date > end_date OR $${i + 1}::date < start_date)`;
   params.push(start_date, end_date);
 
   const { rows } = await pool.query(sql, params);
@@ -118,7 +154,7 @@ async function getSlotAvailability(slot_id) {
     `
     SELECT
       s.slot_id, s.capacity,
-      (SELECT COUNT(*) FROM bookings b
+      (SELECT COALESCE(SUM(b.quantity), 0) FROM bookings b
        WHERE b.slot_id = s.slot_id AND b.booking_status <> 'Cancelled')::int AS booked
     FROM attraction_slots s
     WHERE s.slot_id = $1
@@ -128,14 +164,14 @@ async function getSlotAvailability(slot_id) {
   return rows[0] || null;
 }
 
-async function isSlotAvailable(slot_id) {
+async function isSlotAvailable(slot_id, qty = 1) {
   const a = await getSlotAvailability(slot_id);
   if (!a) return false;
-  return a.booked < a.capacity;
+  return a.booked + Math.max(1, Number(qty || 1)) <= a.capacity;
 }
 
 // Concurrency-safe check during booking creation
-async function assertCapacityAndLock(client, slot_id) {
+async function assertCapacityAndLock(client, slot_id, qty = 1) {
   // lock slot row to serialize concurrent bookings on the same slot
   const slot = (
     await client.query(`SELECT * FROM attraction_slots WHERE slot_id = $1 FOR UPDATE`, [slot_id])
@@ -147,13 +183,14 @@ async function assertCapacityAndLock(client, slot_id) {
   }
   const booked = (
     await client.query(
-      `SELECT COUNT(*)::int AS c FROM bookings WHERE slot_id = $1 AND booking_status <> 'Cancelled'`,
+      `SELECT COALESCE(SUM(quantity), 0)::int AS c FROM bookings WHERE slot_id = $1 AND booking_status <> 'Cancelled'`,
       [slot_id]
     )
   ).rows[0].c;
 
-  if (booked >= slot.capacity) {
-    const err = new Error('Slot capacity full');
+  const requestQty = Math.max(1, Number(qty || 1));
+  if (booked + requestQty > slot.capacity) {
+    const err = new Error('Slot capacity insufficient');
     err.status = 409;
     throw err;
   }
