@@ -3,6 +3,7 @@ const { pool } = require('../../config/db');
 const logger = require('../../config/logger');
 
 const ADMIN_ROLES = new Set(['root', 'admin', 'subadmin', 'superadmin']);
+const SUPERUSER_IDS = new Set([1]);
 
 function getToken(req) {
   const hdr = req.headers.authorization || req.headers.Authorization || '';
@@ -75,9 +76,15 @@ async function adminAuth(req, res, next) {
     }
 
     const roles = await loadUserRoles(user.user_id);
+    const userIdNum = Number(user.user_id);
+    const isSuperUser = !Number.isNaN(userIdNum) && SUPERUSER_IDS.has(userIdNum);
     const hasAdminRole = roles.some((r) => ADMIN_ROLES.has(String(r).toLowerCase()));
-    if (!hasAdminRole) {
+    if (!hasAdminRole && !isSuperUser) {
       return res.status(403).json({ error: 'Forbidden: Admin role required' });
+    }
+
+    if (isSuperUser && !roles.includes('superuser')) {
+      roles.push('superuser');
     }
 
     // Attach to request

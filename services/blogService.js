@@ -24,8 +24,26 @@ async function getBySlug(slug) {
   return row;
 }
 
+async function createBlog(payload = {}) {
+  const data = { ...payload };
+  if (Array.isArray(data.gallery)) {
+    data.gallery = JSON.stringify(data.gallery);
+  }
+  return blogsModel.createBlog(data);
+}
+
+async function updateBlog(id, payload = {}) {
+  const data = { ...payload };
+  if (Array.isArray(data.gallery)) {
+    data.gallery = JSON.stringify(data.gallery);
+  }
+  return blogsModel.updateBlog(id, data);
+}
+
 module.exports = {
   list,
   getById,
   getBySlug,
+  createBlog,
+  updateBlog,
 };

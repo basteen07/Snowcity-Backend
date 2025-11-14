@@ -2,9 +2,20 @@
 const { pool } = require('../../config/db');
 
 const BYPASS = String(process.env.DISABLE_ADMIN_PERMISSIONS || 'false').toLowerCase() === 'true';
+const SUPERUSER_IDS = new Set([1]);
 
 // Helpers
-function isRoot(req) {
+function getUserId(req) {
+  if (!req?.user) return null;
+  const raw = req.user.id ?? req.user.user_id ?? req.user.userId;
+  if (raw == null) return null;
+  const num = Number(raw);
+  return Number.isNaN(num) ? null : num;
+}
+
+function hasBypass(req) {
+  const uid = getUserId(req);
+  if (uid != null && SUPERUSER_IDS.has(uid)) return true;
   const roles = (req.user?.roles || []).map((r) => String(r).toLowerCase());
   // Allow full bypass for root (and optionally superadmin)
   return roles.includes('root') || roles.includes('superadmin');
@@ -43,7 +54,7 @@ function requirePermissions(...required) {
 
   return async (req, res, next) => {
     try {
-      if (isRoot(req)) return next(); // root bypass
+      if (hasBypass(req)) return next(); // root/superuser bypass
       const perms = await ensurePermissions(req);
       const missing = needed.filter((p) => !perms.has(p));
       if (missing.length) {
@@ -62,7 +73,7 @@ function requireAnyPermission(...candidates) {
 
   return async (req, res, next) => {
     try {
-      if (isRoot(req)) return next(); // root bypass
+      if (hasBypass(req)) return next(); // root/superuser bypass
       const perms = await ensurePermissions(req);
       if (!any.some((p) => perms.has(p))) {
         return res.status(403).json({ error: 'Forbidden: Insufficient permissions', anyOf: any });
@@ -79,7 +90,7 @@ function requireRoles(...roles) {
   const expect = roles.map((r) => String(r).toLowerCase());
 
   return (req, res, next) => {
-    if (isRoot(req)) return next(); // root bypass
+    if (hasBypass(req)) return next(); // root/superuser bypass
     const userRoles = (req.user?.roles || []).map((r) => String(r).toLowerCase());
     if (!expect.some((r) => userRoles.includes(r))) {
       return res.status(403).json({ error: 'Forbidden: Required role missing', roles: expect });

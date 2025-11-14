@@ -2,6 +2,28 @@ const { pool } = require('../config/db');
 
 function mapBlog(row) {
   if (!row) return null;
+  let gallery = row.gallery;
+  if (typeof gallery === 'string') {
+    try {
+      gallery = JSON.parse(gallery);
+    } catch {
+      gallery = [];
+    }
+  }
+  if (Array.isArray(gallery)) {
+    gallery = gallery.map((item) => {
+      if (!item || typeof item !== 'object') {
+        return { media_id: null, url: item }; // fallback for primitives
+      }
+      return {
+        media_id: item.media_id ?? item.id ?? null,
+        url: item.url ?? item.image_url ?? item.media_url ?? null,
+        thumbnail: item.thumbnail ?? item.thumb_url ?? null,
+        title: item.title ?? null,
+        description: item.description ?? null,
+      };
+    });
+  }
   return {
     blog_id: row.blog_id,
     title: row.title,
@@ -18,21 +40,35 @@ function mapBlog(row) {
     meta_keywords: row.meta_keywords,
     section_type: row.section_type,
     section_ref_id: row.section_ref_id,
-    gallery: row.gallery,
+    gallery,
     active: row.active,
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
 }
 
-async function createBlog({ title, slug, content = null, image_url = null, author = null, meta_title = null, meta_description = null, meta_keywords = null, section_type = 'none', section_ref_id = null, gallery = [], active = true }) {
-  const { rows } = await pool.query(
-    `INSERT INTO blogs (title, slug, content, image_url, author, meta_title, meta_description, meta_keywords, section_type, section_ref_id, gallery, active)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, COALESCE($11, '[]'::jsonb), $12)
-     RETURNING *`,
-    [title, slug, content, image_url, author, meta_title, meta_description, meta_keywords, section_type, section_ref_id, Array.isArray(gallery) ? JSON.stringify(gallery) : gallery, active]
-  );
-  return mapBlog(rows[0]);
+async function createBlog({ title, slug, content = null, image_url = null, author = null, meta_title = null, meta_description = null, meta_keywords = null, section_type = 'none', section_ref_id = null, gallery = [], active = true, editor_mode = 'rich', raw_html = null, raw_css = null, raw_js = null }) {
+  try {
+    const { rows } = await pool.query(
+      `INSERT INTO blogs (title, slug, content, image_url, author, meta_title, meta_description, meta_keywords, section_type, section_ref_id, gallery, active, editor_mode, raw_html, raw_css, raw_js)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, COALESCE($11, '[]'::jsonb), $12, $13, $14, $15, $16)
+       RETURNING *`,
+      [title, slug, content, image_url, author, meta_title, meta_description, meta_keywords, section_type, section_ref_id, Array.isArray(gallery) ? JSON.stringify(gallery) : gallery, active, editor_mode, raw_html, raw_css, raw_js]
+    );
+    return mapBlog(rows[0]);
+  } catch (err) {
+    // Fallback if schema lacks raw/editor columns
+    if (err && (err.code === '42703' || /column\s+"?(editor_mode|raw_html|raw_css|raw_js)"?\s+does not exist/i.test(String(err.message)))) {
+      const { rows } = await pool.query(
+        `INSERT INTO blogs (title, slug, content, image_url, author, meta_title, meta_description, meta_keywords, section_type, section_ref_id, gallery, active)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, COALESCE($11, '[]'::jsonb), $12)
+         RETURNING *`,
+        [title, slug, content, image_url, author, meta_title, meta_description, meta_keywords, section_type, section_ref_id, Array.isArray(gallery) ? JSON.stringify(gallery) : gallery, active]
+      );
+      return mapBlog(rows[0]);
+    }
+    throw err;
+  }
 }
 
 async function getBlogById(blog_id) {
@@ -83,13 +119,36 @@ async function updateBlog(blog_id, fields = {}) {
   });
   params.push(blog_id);
 
-  const { rows } = await pool.query(
-    `UPDATE blogs SET ${sets.join(', ')}, updated_at = NOW()
-     WHERE blog_id = $${params.length}
-     RETURNING *`,
-    params
-  );
-  return mapBlog(rows[0]);
+  try {
+    const { rows } = await pool.query(
+      `UPDATE blogs SET ${sets.join(', ')}, updated_at = NOW()
+       WHERE blog_id = $${params.length}
+       RETURNING *`,
+      params
+    );
+    return mapBlog(rows[0]);
+  } catch (err) {
+    // Fallback: if raw/editor columns don't exist, retry without them
+    if (err && (err.code === '42703' || /column\s+"?(editor_mode|raw_html|raw_css|raw_js)"?\s+does not exist/i.test(String(err.message)))) {
+      const filtered = entries.filter(([k]) => !['editor_mode','raw_html','raw_css','raw_js'].includes(k));
+      if (!filtered.length) return getBlogById(blog_id);
+      const sets2 = [];
+      const params2 = [];
+      filtered.forEach(([k, v], idx) => {
+        sets2.push(`${k} = $${idx + 1}`);
+        params2.push(v);
+      });
+      params2.push(blog_id);
+      const { rows } = await pool.query(
+        `UPDATE blogs SET ${sets2.join(', ')}, updated_at = NOW()
+         WHERE blog_id = $${params2.length}
+         RETURNING *`,
+        params2
+      );
+      return mapBlog(rows[0]);
+    }
+    throw err;
+  }
 }
 
 async function deleteBlog(blog_id) {

@@ -27,12 +27,22 @@ exports.addItem = async (req, res, next) => {
     const sessionId = userId ? null : getSessionId(req);
     if (!userId && !sessionId) return res.status(400).json({ error: 'x-session-id header required for guest carts' });
 
-    const { item_type = 'attraction', attraction_id, slot_id = null, booking_date = null, booking_time = null, quantity = 1, meta = {} } = req.body || {};
+    const {
+      item_type = 'attraction',
+      attraction_id,
+      combo_id,
+      slot_id = null,
+      combo_slot_id = null,
+      booking_date = null,
+      booking_time = null,
+      quantity = 1,
+      meta = {},
+    } = req.body || {};
 
     const out = await cartService.addItem({
       user_id: userId,
       session_id: sessionId,
-      item: { item_type, attraction_id, slot_id, booking_date, booking_time, quantity, meta },
+      item: { item_type, attraction_id, combo_id, slot_id, combo_slot_id, booking_date, booking_time, quantity, meta },
     });
     res.status(201).json(out);
   } catch (err) { next(err); }

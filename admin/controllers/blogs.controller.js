@@ -1,5 +1,6 @@
 // admin/controllers/blogs.controller.js
 const blogsModel = require('../../models/blogs.model');
+const blogService = require('../../services/blogService');
 
 // List blogs with filters/pagination
 async function listBlogs(req, res, next) {
@@ -52,7 +53,7 @@ async function createBlog(req, res, next) {
       raw_css: p.raw_css || null,
       raw_js: p.raw_js || null,
     };
-    const row = await blogsModel.createBlog(payload);
+    const row = await blogService.createBlog(payload);
     res.status(201).json(row);
   } catch (err) {
     next(err);
@@ -82,7 +83,7 @@ async function updateBlog(req, res, next) {
       raw_css: p.raw_css,
       raw_js: p.raw_js,
     };
-    const row = await blogsModel.updateBlog(id, payload);
+    const row = await blogService.updateBlog(id, payload);
     if (!row) return res.status(404).json({ error: 'Blog not found' });
     res.json(row);
   } catch (err) {

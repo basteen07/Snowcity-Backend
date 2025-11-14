@@ -24,9 +24,17 @@ const ALL_PERMISSION_KEYS = [
   'banners:read', 'banners:write',
   'pages:read', 'pages:write',
   'blogs:read', 'blogs:write',
+  'gallery:read', 'gallery:write',
+  'admin-management:read', 'admin-management:write',
   'dashboard:read',
   'analytics:read',
 ];
+
+const SUB_ADMIN_ROLE = {
+  name: 'sub_admin',
+  description: 'Sub admin role',
+  permissions: ['gallery:read', 'gallery:write']
+};
 
 async function ensureRole(client, roleName) {
   const name = String(roleName).toLowerCase();
@@ -57,6 +65,30 @@ async function ensureUserHasRole(client, userId, roleId) {
      ON CONFLICT (user_id, role_id) DO NOTHING`,
     [userId, roleId]
   );
+}
+
+async function ensureRoleWithPermissions({ name, description = null, permissions = [] }) {
+  const roleName = String(name).toLowerCase();
+
+  return withTransaction(async (client) => {
+    const roleId = await ensureRole(client, roleName);
+
+    if (description) {
+      await client.query(`UPDATE roles SET description = $1 WHERE role_id = $2`, [description, roleId]);
+    }
+
+    for (const key of permissions) {
+      const pid = await ensurePermission(client, key);
+      await client.query(
+        `INSERT INTO role_permissions (role_id, permission_id)
+         VALUES ($1, $2)
+         ON CONFLICT (role_id, permission_id) DO NOTHING`,
+        [roleId, pid]
+      );
+    }
+
+    return { roleId, permissions };
+  });
 }
 
 async function grantAllAdminPermissions(userId) {
@@ -106,6 +138,9 @@ async function grantAllAdminPermissions(userId) {
 
     const perm = await grantAllAdminPermissions(created.user.user_id);
     console.log('Admin role permissions ensured:', perm.granted.length, 'permissions');
+
+    const subAdmin = await ensureRoleWithPermissions(SUB_ADMIN_ROLE);
+    console.log('Sub admin role ensured:', subAdmin.roleId, 'with', subAdmin.permissions.length, 'permissions');
 
     console.log('Admin user:', created.user);
     if (created.token) {
