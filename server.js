@@ -11,6 +11,7 @@ const PORT = process.env.PORT || 4000;
 
 const server = http.createServer(app);
 
+app.use('/api/webhooks', require('./webhooks/payphi.return'));
 
 
 // Start server only after confirming DB connectivity

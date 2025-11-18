@@ -14,6 +14,11 @@ function isRoot(req) {
 function allowedAttractions(req) {
   return req.user?.scopes?.attraction || [];
 }
+const toNumber = (val) => {
+  const num = Number(val);
+  return Number.isFinite(num) ? num : null;
+};
+const sanitizeDate = (val) => (typeof val === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(val) ? val : null);
 
 async function listBookings(req, res, next) {
   try {
@@ -24,17 +29,28 @@ async function listBookings(req, res, next) {
       user_email,
       user_phone,
       attraction_id,
+      combo_id,
+      offer_id,
+      item_type,
+      date_from,
+      date_to,
+      start_date,
+      end_date,
       page = '1',
       limit = '20',
     } = req.query;
 
+    const attractionId = toNumber(attraction_id);
+    const comboId = toNumber(combo_id);
+    const offerId = toNumber(offer_id);
+    const normalizedItemType = ['Combo', 'Attraction'].includes(item_type) ? item_type : null;
+    const dateFrom = sanitizeDate(date_from || start_date);
+    const dateTo = sanitizeDate(date_to || end_date);
+
     // Scoping
     const root = isRoot(req);
     const scoped = allowedAttractions(req);
-    if (!root && scoped.length === 0) {
-      return res.json({ data: [], meta: { page: 1, limit: 0, total: 0 } });
-    }
-    if (!root && attraction_id && !scoped.includes(Number(attraction_id))) {
+    if (!root && attractionId && Array.isArray(scoped) && scoped.length > 0 && !scoped.includes(attractionId)) {
       // Optional: return empty; or 403 to be explicit
       return res.status(403).json({ error: 'Forbidden: attraction not in scope' });
     }
@@ -47,29 +63,61 @@ async function listBookings(req, res, next) {
     const params = [];
     let i = 1;
 
-    if (search) { where.push(`(b.booking_ref ILIKE $${i})`); params.push(`%${search}%`); i++; }
+    const comboTitleExpr = `COALESCE(NULLIF(CONCAT_WS(' + ', NULLIF(a1.title, ''), NULLIF(a2.title, '')), ''), CONCAT('Combo #', c.combo_id::text))`;
+    const itemTitleExpr = `CASE WHEN b.item_type = 'Combo' THEN ${comboTitleExpr} ELSE a.title END`;
+
+    if (search) {
+      where.push(`(
+        b.booking_ref ILIKE $${i}
+        OR u.email ILIKE $${i}
+        OR u.phone ILIKE $${i}
+        OR u.name ILIKE $${i}
+        OR ${itemTitleExpr} ILIKE $${i}
+      )`);
+      params.push(`%${search}%`);
+      i++;
+    }
     if (payment_status) { where.push(`b.payment_status = $${i}`); params.push(payment_status); i++; }
     if (booking_status) { where.push(`b.booking_status = $${i}`); params.push(booking_status); i++; }
     if (user_email) { where.push(`u.email ILIKE $${i}`); params.push(`%${user_email}%`); i++; }
     if (user_phone) { where.push(`u.phone ILIKE $${i}`); params.push(`%${user_phone}%`); i++; }
-    if (attraction_id) { where.push(`b.attraction_id = $${i}`); params.push(Number(attraction_id)); i++; }
+    if (attractionId) { where.push(`b.attraction_id = $${i}`); params.push(attractionId); i++; }
+    if (comboId) { where.push(`b.combo_id = $${i}`); params.push(comboId); i++; }
+    if (offerId) { where.push(`b.offer_id = $${i}`); params.push(offerId); i++; }
+    if (normalizedItemType) { where.push(`b.item_type = $${i}::booking_item_type`); params.push(normalizedItemType); i++; }
+    if (dateFrom) { where.push(`b.booking_date >= $${i}`); params.push(dateFrom); i++; }
+    if (dateTo) { where.push(`b.booking_date <= $${i}`); params.push(dateTo); i++; }
 
     // Apply scope for non-root
-    if (!root) {
+    if (!root && Array.isArray(scoped) && scoped.length > 0) {
       where.push(`b.attraction_id = ANY($${i}::bigint[])`);
       params.push(scoped);
       i++;
     }
 
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    const joins = `
+      LEFT JOIN users u ON u.user_id = b.user_id
+      LEFT JOIN attractions a ON a.attraction_id = b.attraction_id
+      LEFT JOIN combos c ON c.combo_id = b.combo_id
+      LEFT JOIN attractions a1 ON a1.attraction_id = c.attraction_1_id
+      LEFT JOIN attractions a2 ON a2.attraction_id = c.attraction_2_id
+      LEFT JOIN offers o ON o.offer_id = b.offer_id
+    `;
 
     const dataSql = `
       SELECT
-        b.*, u.name AS user_name, u.email AS user_email, u.phone AS user_phone,
-        a.title AS attraction_title
+        b.*,
+        u.name AS user_name,
+        u.email AS user_email,
+        u.phone AS user_phone,
+        a.title AS attraction_title,
+        ${comboTitleExpr} AS combo_title,
+        o.title AS offer_title,
+        o.code AS offer_code,
+        ${itemTitleExpr} AS item_title
       FROM bookings b
-      LEFT JOIN users u ON u.user_id = b.user_id
-      LEFT JOIN attractions a ON a.attraction_id = b.attraction_id
+      ${joins}
       ${whereSql}
       ORDER BY b.created_at DESC
       LIMIT $${i} OFFSET $${i + 1}
@@ -77,7 +125,7 @@ async function listBookings(req, res, next) {
     const countSql = `
       SELECT COUNT(*)::int AS count
       FROM bookings b
-      LEFT JOIN users u ON u.user_id = b.user_id
+      ${joins}
       ${whereSql}
     `;
 
@@ -86,9 +134,10 @@ async function listBookings(req, res, next) {
       pool.query(countSql, params),
     ]);
 
+    const total = Number(countRes.rows[0]?.count || 0);
     res.json({
       data: rowsRes.rows,
-      meta: { page: p, limit: l, total: countRes.rows[0]?.count || 0 },
+      meta: { page: p, limit: l, total, totalPages: Math.max(1, Math.ceil(total / l) || 1) },
     });
   } catch (err) {
     next(err);

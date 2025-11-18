@@ -2,9 +2,32 @@
 const router = require('express').Router();
 const { requireAnyPermission } = require('../middleware/permissionGuard');
 const adminModel = require('../models/admin.model');
+const analyticsCtrl = require('../controllers/analytics.controller');
 const PDFDocument = require('pdfkit');
 
-// ... existing routes (overview, trend, sales-trend, top-attractions)
+router.get(
+  '/',
+  requireAnyPermission('analytics:read', 'dashboard:read'),
+  analyticsCtrl.getAnalytics
+);
+
+router.get(
+  '/overview',
+  requireAnyPermission('analytics:read', 'dashboard:read'),
+  analyticsCtrl.getOverview
+);
+
+router.get(
+  '/trend',
+  requireAnyPermission('analytics:read', 'dashboard:read'),
+  analyticsCtrl.getTrend
+);
+
+router.get(
+  '/top-attractions',
+  requireAnyPermission('analytics:read', 'dashboard:read'),
+  analyticsCtrl.getTopAttractions
+);
 
 router.get(
   '/attractions-breakdown',

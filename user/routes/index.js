@@ -1,7 +1,8 @@
 const router = require('express').Router();
 
-// Health for this group
-router.get('/', (req, res) => res.json({ userApi: 'ok' }));
+// Group health
+router.get('/_health', (req, res) => res.json({ userApi: 'ok' }));
+router.get('/', (req, res) => res.json({ userApi: 'ok' })); // keep if you want both
 
 router.use('/auth', require('./auth.routes'));
 router.use('/profile', require('./profile.routes'));

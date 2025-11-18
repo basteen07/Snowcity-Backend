@@ -1,14 +1,88 @@
+'use strict';
+
 const bookingsModel = require('../../models/bookings.model');
 const bookingService = require('../../services/bookingService');
 
-const me = (req) => req.user?.id || null;
+const me = (req) => req.user?.id || req.user?.user_id || null;
+
+const toInt = (n, d = null) => {
+  const v = Number(n);
+  return Number.isFinite(v) ? v : d;
+};
+const isPosInt = (n) => Number.isInteger(n) && n > 0;
+
+function normalizeAddons(addons) {
+  if (!Array.isArray(addons)) return [];
+  return addons
+    .map((a) => ({
+      addon_id: toInt(a?.addon_id ?? a?.id ?? a?.addonId, null),
+      quantity: Math.max(1, toInt(a?.quantity ?? a?.qty, 1))
+    }))
+    .filter((a) => isPosInt(a.addon_id));
+}
+
+function normalizeCreateItem(input = {}, userId = null) {
+  const item = input || {};
+
+  // IDs (accept snake_case and camelCase)
+  const attraction_id = toInt(item.attraction_id ?? item.attractionId, null);
+  const slot_id = toInt(item.slot_id ?? item.slotId, null);
+  const combo_id = toInt(item.combo_id ?? item.comboId, null);
+  const combo_slot_id = toInt(item.combo_slot_id ?? item.comboSlotId, null);
+  const offer_id = toInt(item.offer_id ?? item.offerId, null);
+
+  // Basics
+  const quantity = Math.max(1, toInt(item.quantity ?? item.qty, 1));
+  const booking_date = item.booking_date || item.date || null;
+  const payment_mode = item.payment_mode || 'Online';
+  const coupon_code = (item.coupon_code ?? item.couponCode ?? item.coupon)?.trim() || null;
+
+  const addons = normalizeAddons(item.addons);
+
+  // Item type (explicit or inferred)
+  const item_typeRaw = item.item_type || item.itemType || (combo_id ? 'Combo' : 'Attraction');
+  const item_type = String(item_typeRaw).trim() === 'Combo' ? 'Combo' : 'Attraction';
+
+  // Validate minimal shape
+  if (item_type === 'Attraction' && !isPosInt(attraction_id)) {
+    const err = new Error('attraction_id is required for Attraction booking'); err.status = 400; throw err;
+  }
+  if (item_type === 'Combo' && !isPosInt(combo_id)) {
+    const err = new Error('combo_id is required for Combo booking'); err.status = 400; throw err;
+  }
+
+  return {
+    user_id: userId || null,
+    item_type,
+    attraction_id: item_type === 'Attraction' ? attraction_id : null,
+    slot_id: item_type === 'Attraction' ? slot_id : null,
+    combo_id: item_type === 'Combo' ? combo_id : null,
+    combo_slot_id: item_type === 'Combo' ? combo_slot_id : null,
+    offer_id: offer_id || null,
+    coupon_code,
+    quantity,
+    addons,
+    booking_date,
+    payment_mode
+  };
+}
+
+/* ====== Controllers ====== */
 
 exports.listMyBookings = async (req, res, next) => {
   try {
     const userId = me(req);
     if (!userId) return res.status(401).json({ error: 'Unauthorized' });
-    const data = await bookingsModel.listBookings({ user_id: userId, limit: 50, offset: 0 });
-    res.json({ data, meta: { count: data.length } });
+
+    const page = Math.max(1, toInt(req.query.page, 1));
+    const limit = Math.min(100, Math.max(1, toInt(req.query.limit, 50)));
+    const offset = (page - 1) * limit;
+
+    const data = await bookingsModel.listBookings({ user_id: userId, limit, offset });
+    res.json({
+      data,
+      meta: { page, limit, count: data.length, hasNext: data.length === limit }
+    });
   } catch (err) { next(err); }
 };
 
@@ -16,165 +90,62 @@ exports.getMyBookingById = async (req, res, next) => {
   try {
     const userId = me(req);
     if (!userId) return res.status(401).json({ error: 'Unauthorized' });
-    const id = Number(req.params.id);
+
+    const id = toInt(req.params.id, null);
+    if (!isPosInt(id)) return res.status(400).json({ error: 'Invalid booking id' });
+
     const row = await bookingsModel.getBookingById(id);
     if (!row || row.user_id !== userId) return res.status(404).json({ error: 'Booking not found' });
+
     res.json(row);
   } catch (err) { next(err); }
 };
 
+/**
+ * Create booking(s)
+ * - Accepts a single object or an array of objects.
+ * - Each item: attraction or combo + optional offer_id, coupon_code, addons, quantity, booking_date, slot/combo_slot.
+ */
 exports.createBooking = async (req, res, next) => {
   try {
-    // Check if user is logged in (has token)
     const userId = me(req);
-    
-    // If user is logged in, create booking directly
-    // If not logged in, booking will be created with user_id = null (guest booking)
-    // User must verify OTP first, then booking will be assigned to user
-    const {
-      attraction_id = null,
-      combo_id = null,
-      slot_id = null,
-      combo_slot_id = null,
-      booking_date = null,
-      booking_time = null,
-      quantity = 1,
-      addons = [],
-      coupon_code = null,
-      payment_mode = 'Online',
-    } = req.body || {};
+    const body = req.body;
+    if (!body) return res.status(400).json({ error: 'Request body is required' });
 
-    if (!attraction_id && !combo_id) {
-      return res.status(400).json({ error: 'attraction_id or combo_id is required' });
+    // Multiple bookings (atomic)
+    if (Array.isArray(body)) {
+      if (!body.length) return res.status(400).json({ error: 'Items array is empty' });
+      const items = body.map((it) => normalizeCreateItem(it, userId));
+      const bookings = await bookingService.createBookings(items);
+      return res.status(201).json({ data: bookings });
     }
 
-    let booking;
-    if (combo_id) {
-      booking = await bookingService.createComboBooking({
-        user_id: userId,
-        combo_id,
-        combo_slot_id,
-        booking_date,
-        booking_time,
-        quantity,
-        addons,
-        coupon_code,
-        payment_mode,
-      });
-    } else {
-      booking = await bookingService.createBooking({
-        user_id: userId,
-        attraction_id,
-        slot_id,
-        booking_date,
-        booking_time,
-        quantity,
-        addons,
-        coupon_code,
-        payment_mode,
-      });
-    }
-    res.status(201).json(booking);
-  } catch (err) { next(err); }
-};
-
-/**
- * Send OTP for booking (for guest users)
- * Creates user if not exists, sends OTP
- */
-exports.sendBookingOtp = async (req, res, next) => {
-  try {
-    const { name, email, phone, channel = 'sms' } = req.body || {};
-    if (!name || !email || !phone) {
-      return res.status(400).json({ error: 'name, email, and phone are required' });
-    }
-    
-    const authService = require('../../services/authService');
-    // Create user if not exists, send OTP
-    const out = await authService.sendOtp({ 
-      email, 
-      phone, 
-      name, 
-      channel, 
-      createIfNotExists: true 
-    });
-    res.json(out);
-  } catch (err) { next(err); }
-};
-
-/**
- * Verify OTP for booking and assign booking to user
- * Returns token and updates booking with user_id
- */
-exports.verifyBookingOtp = async (req, res, next) => {
-  try {
-    const { booking_id, otp, email, phone } = req.body || {};
-    if (!otp) return res.status(400).json({ error: 'otp is required' });
-    if (!email && !phone) {
-      return res.status(400).json({ error: 'email or phone is required' });
-    }
-    
-    const authService = require('../../services/authService');
-    // Verify OTP and get token (creates user if not exists via sendOtp flow)
-    const verifyResult = await authService.verifyOtp({ otp, email, phone });
-    
-    // If booking_id provided, assign booking to user
-    if (booking_id) {
-      await bookingService.assignBookingToUser(booking_id, verifyResult.user.user_id);
-    }
-    
-    res.json({
-      verified: true,
-      user: verifyResult.user,
-      token: verifyResult.token,
-      expires_at: verifyResult.expires_at,
-      booking_assigned: !!booking_id
-    });
+    // Single booking
+    const input = normalizeCreateItem(body, userId);
+    const booking = await bookingService.createBooking(input);
+    return res.status(201).json(booking);
   } catch (err) { next(err); }
 };
 
 exports.initiatePayPhiPayment = async (req, res, next) => {
   try {
     const userId = me(req);
-    if (!userId) return res.status(401).json({ error: 'Unauthorized. Please verify OTP first.' });
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
 
-    const id = Number(req.params.id);
-    let b = await bookingsModel.getBookingById(id);
-    if (!b) return res.status(404).json({ error: 'Booking not found' });
+    const id = toInt(req.params.id, null);
+    if (!isPosInt(id)) return res.status(400).json({ error: 'Invalid booking id' });
 
-    // If this is a guest booking, auto-assign it to the logged-in user to avoid OTP flow
-    if (!b.user_id) {
-      await bookingsModel.updateBooking(id, { user_id: userId });
-      b = await bookingsModel.getBookingById(id);
-    }
+    const b = await bookingsModel.getBookingById(id);
+    if (!b || b.user_id !== userId) return res.status(404).json({ error: 'Booking not found' });
 
-    // Ensure booking belongs to logged-in user
-    if (b.user_id !== userId) {
-      return res.status(403).json({ error: 'Forbidden: This booking does not belong to you' });
-    }
-
-    // Get user info for payment
-    const usersModel = require('../../models/users.model');
-    const user = await usersModel.getUserById(userId);
-    if (!user) return res.status(404).json({ error: 'User not found' });
-
-    // Use user's email and phone, or allow override from body
     const { email, mobile } = (req.body && typeof req.body === 'object') ? req.body : {};
-    const paymentEmail = email || user.email;
-    const paymentMobile = mobile || user.phone;
-
-    if (!paymentEmail || !paymentMobile) {
-      return res.status(400).json({ 
-        error: 'email and mobile are required for payment',
-        hint: 'Please provide email and phone, or ensure your account has them set'
-      });
-    }
+    if (!email || !mobile) return res.status(400).json({ error: 'email and mobile are required' });
 
     const out = await bookingService.initiatePayPhiPayment(id, {
-      email: paymentEmail,
-      mobile: paymentMobile,
+      email,
+      mobile,
       addlParam1: String(id),
-      addlParam2: 'SnowCity',
+      addlParam2: 'SnowCity'
     });
     res.json(out);
   } catch (err) { next(err); }
@@ -185,7 +156,9 @@ exports.checkPayPhiStatus = async (req, res, next) => {
     const userId = me(req);
     if (!userId) return res.status(401).json({ error: 'Unauthorized' });
 
-    const id = Number(req.params.id);
+    const id = toInt(req.params.id, null);
+    if (!isPosInt(id)) return res.status(400).json({ error: 'Invalid booking id' });
+
     const b = await bookingsModel.getBookingById(id);
     if (!b || b.user_id !== userId) return res.status(404).json({ error: 'Booking not found' });
 

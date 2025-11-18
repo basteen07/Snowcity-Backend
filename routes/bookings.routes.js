@@ -1,28 +1,27 @@
 const express = require('express');
 const router = express.Router();
 
-const ctrl = require('../user/controllers/bookings.controller');
-const { requireAuth } = require('../middlewares/authMiddleware');
-const { paymentLimiter } = require('../middlewares/rateLimiter');
+const { defaultLimiter } = require('../middlewares/rateLimiter');
 
-function must(name, fn) {
-  if (typeof fn !== 'function') throw new Error(`User bookings: handler ${name} is not a function`);
-}
-must('listMyBookings', ctrl.listMyBookings);
-must('getMyBookingById', ctrl.getMyBookingById);
-must('createBooking', ctrl.createBooking);
-must('initiatePayPhiPayment', ctrl.initiatePayPhiPayment);
-must('checkPayPhiStatus', ctrl.checkPayPhiStatus);
+// Global rate limiter for public API
+router.use(defaultLimiter);
 
-// User bookings
-router.get('/', requireAuth, ctrl.listMyBookings);
-router.get('/:id', requireAuth, ctrl.getMyBookingById);
+// Public/user routes
+router.use('/auth', require('./auth.routes'));
+router.use('/users', require('./users.routes'));
+router.use('/attractions', require('./attractions.routes'));
+router.use('/slots', require('./slots.routes'));
+const userBookingsRouter = require('../user/routes/bookings.routes');
+router.use('/bookings', userBookingsRouter);
+router.use('/addons', require('./addons.routes'));
+router.use('/combos', require('./combos.routes'));
+router.use('/coupons', require('./coupons.routes'));
+router.use('/offers', require('./offers.routes'));
 
-// Create booking (for testing, only require auth)
-router.post('/', requireAuth, ctrl.createBooking);
+// Admin routes (protected inside admin/router)
+router.use('/admin', require('../admin/routes'));
 
-// PayPhi
-router.post('/:id/pay/payphi/initiate', requireAuth, paymentLimiter, ctrl.initiatePayPhiPayment);
-router.get('/:id/pay/payphi/status', requireAuth, ctrl.checkPayPhiStatus);
+// Base
+router.get('/', (req, res) => res.json({ api: 'SnowCity', version: '1.0.0' }));
 
 module.exports = router;

@@ -1,20 +1,21 @@
 const router = require('express').Router();
-const ctrl = require('../controllers/bookings.controller');
-const { requireAuth, optionalAuth } = require('../../middlewares/authMiddleware');
-const { paymentLimiter } = require('../../middlewares/rateLimiter');
 
-router.get('/', requireAuth, ctrl.listMyBookings);
-router.get('/:id', requireAuth, ctrl.getMyBookingById);
+const bookingsCtrl = require('../controllers/bookings.controller');
+const { requireAuth } = require('../../middlewares/authMiddleware');
+const { defaultLimiter, paymentLimiter } = require('../../middlewares/rateLimiter');
 
-// Create booking - optional auth (supports guest bookings)
-router.post('/', optionalAuth, ctrl.createBooking);
+// Rate-limit all booking endpoints in this router
+router.use(defaultLimiter);
 
-// OTP flow for guest bookings
-router.post('/otp/send', ctrl.sendBookingOtp);
-router.post('/otp/verify', ctrl.verifyBookingOtp);
+// Current user's bookings
+router.get('/', requireAuth, bookingsCtrl.listMyBookings);
+router.get('/:id', requireAuth, bookingsCtrl.getMyBookingById);
 
-// PayPhi
-router.post('/:id/pay/payphi/initiate', requireAuth, paymentLimiter, ctrl.initiatePayPhiPayment);
-router.get('/:id/pay/payphi/status', requireAuth, ctrl.checkPayPhiStatus);
+// Create booking(s)
+router.post('/', requireAuth, bookingsCtrl.createBooking);
+
+// PayPhi helpers
+router.post('/:id/pay/payphi/initiate', requireAuth, paymentLimiter, bookingsCtrl.initiatePayPhiPayment);
+router.get('/:id/pay/payphi/status', requireAuth, bookingsCtrl.checkPayPhiStatus);
 
 module.exports = router;

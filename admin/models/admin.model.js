@@ -73,6 +73,30 @@ async function getTopAttractions({ from = null, to = null, limit = 10, attractio
   return rows;
 }
 
+// Combo vs offer contribution stats
+async function getComboOfferStats({ from = null, to = null, attraction_id = null } = {}) {
+  const sql = `
+    SELECT
+      COUNT(*) FILTER (WHERE b.item_type = 'Combo')::int AS combo_bookings,
+      COALESCE(SUM(CASE WHEN b.item_type = 'Combo' AND b.payment_status = 'Completed' THEN b.final_amount ELSE 0 END), 0) AS combo_revenue,
+      COUNT(*) FILTER (WHERE b.offer_id IS NOT NULL)::int AS offer_bookings,
+      COALESCE(SUM(CASE WHEN b.offer_id IS NOT NULL AND b.payment_status = 'Completed' THEN b.final_amount ELSE 0 END), 0) AS offer_revenue
+    FROM bookings b
+    WHERE b.booking_status <> 'Cancelled'
+      AND b.created_at >= COALESCE($1::timestamptz, NOW() - INTERVAL '30 days')
+      AND b.created_at <  COALESCE($2::timestamptz, NOW())
+      AND ($3::bigint IS NULL OR b.attraction_id = $3::bigint);
+  `;
+  const { rows } = await pool.query(sql, [from, to, attraction_id]);
+  const stats = rows[0] || {};
+  return {
+    combo_bookings: Number(stats.combo_bookings || 0),
+    combo_revenue: Number(stats.combo_revenue || 0),
+    offer_bookings: Number(stats.offer_bookings || 0),
+    offer_revenue: Number(stats.offer_revenue || 0),
+  };
+}
+
 // Sales trend (bookings, people, revenue) by granularity
 async function getSalesTrend({ from = null, to = null, granularity = 'day', attraction_id = null } = {}) {
   const g = sanitizeGranularity(granularity);
@@ -223,14 +247,15 @@ async function getUserPermissions(userId) {
 
 // Admin overview: combine summary + breakdown + top + trend
 async function getAdminOverview({ from = null, to = null, attraction_id = null } = {}) {
-  const [summary, statusBreakdown, topAttractions, trend] = await Promise.all([
+  const [summary, statusBreakdown, topAttractions, trend, comboOffers] = await Promise.all([
     getDashboardSummary({ from, to, attraction_id }),
     getBookingCountsByStatus({ from, to, attraction_id }),
     getTopAttractions({ from, to, limit: 5, attraction_id }),
     getSalesTrend({ from, to, granularity: 'day', attraction_id }),
+    getComboOfferStats({ from, to, attraction_id }),
   ]);
 
-  return { summary, statusBreakdown, topAttractions, trend };
+  return { summary: { ...summary, ...comboOffers }, statusBreakdown, topAttractions, trend };
 }
 
 // Attractions-wise breakdown within range
@@ -282,6 +307,7 @@ module.exports = {
   getSalesTrend,
   getRecentBookings,
   getBookingCountsByStatus,
+  getComboOfferStats,
   listAdmins,
   ensureRole,
   assignRoleByName,

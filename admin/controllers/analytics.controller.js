@@ -1,16 +1,24 @@
 const analyticsModel = require('../../models/analytics.model');
 const adminModel = require('../models/admin.model');
 
-// Combined overview: summary + top attractions + trend
+// Combined overview: summary + breakdown + top attractions + trend (uses live bookings)
 exports.getOverview = async (req, res, next) => {
   try {
-    const { from = null, to = null, granularity = 'day' } = req.query;
-    const [summary, topAttractions, trend] = await Promise.all([
-      analyticsModel.getSummary({ from, to }),
-      adminModel.getTopAttractions({ from, to, limit: 5 }),
-      adminModel.getSalesTrend({ from, to, granularity }),
-    ]);
-    res.json({ summary, topAttractions, trend });
+    const { from = null, to = null } = req.query;
+    const attraction_id = req.query.attraction_id ? Number(req.query.attraction_id) : null;
+    const data = await adminModel.getAdminOverview({ from, to, attraction_id });
+
+    // Fallback to analytics aggregate if admin overview returns nothing
+    if (!data || !data.summary) {
+      const [summary, topAttractions, trend] = await Promise.all([
+        analyticsModel.getSummary({ from, to }),
+        adminModel.getTopAttractions({ from, to, limit: 5, attraction_id }),
+        adminModel.getSalesTrend({ from, to, granularity: 'day', attraction_id }),
+      ]);
+      return res.json({ summary, topAttractions, trend, statusBreakdown: [] });
+    }
+
+    res.json(data);
   } catch (err) {
     next(err);
   }

@@ -16,6 +16,7 @@ exports.list = async (req, res, next) => {
 exports.getById = async (req, res, next) => {
   try {
     const id = Number(req.params.id);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid gallery id' });
     const row = await galleryModel.getById(id);
     if (!row) return res.status(404).json({ error: 'Gallery item not found' });
     res.json(row);
@@ -34,6 +35,7 @@ exports.create = async (req, res, next) => {
 exports.update = async (req, res, next) => {
   try {
     const id = Number(req.params.id);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid gallery id' });
     const row = await galleryModel.update(id, req.body || {});
     if (!row) return res.status(404).json({ error: 'Gallery item not found' });
     res.json(row);
@@ -43,6 +45,7 @@ exports.update = async (req, res, next) => {
 exports.remove = async (req, res, next) => {
   try {
     const id = Number(req.params.id);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid gallery id' });
     const ok = await galleryModel.remove(id);
     if (!ok) return res.status(404).json({ error: 'Gallery item not found' });
     res.json({ deleted: true });

@@ -102,3 +102,54 @@ exports.checkPayPhiStatus = async (req, res, next) => {
     res.json({ note: 'Use /api/webhooks/payphi/return?tranCtx=...' });
   } catch (err) { next(err); }
 };
+
+exports.finalizeCheckout = async (req, res, next) => {
+  try {
+    const id = req.user?.id ?? req.user?.user_id;
+    const userId = Number(id);
+    if (!Number.isInteger(userId) || userId <= 0) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const { cart_id = null, cart_ref = null } = req.body || {};
+
+    // Load cart by id/ref or latest completed for this user
+    const { pool } = require('../../config/db');
+    let cartRow = null;
+
+    if (cart_id) {
+      const r = await pool.query(`SELECT * FROM carts WHERE cart_id = $1`, [cart_id]);
+      cartRow = r.rows[0] || null;
+    } else if (cart_ref) {
+      const r = await pool.query(`SELECT * FROM carts WHERE cart_ref = $1`, [cart_ref]);
+      cartRow = r.rows[0] || null;
+    } else {
+      const r = await pool.query(
+        `SELECT * FROM carts
+         WHERE user_id = $1 AND payment_status = 'Completed'
+         ORDER BY updated_at DESC
+         LIMIT 1`,
+        [userId]
+      );
+      cartRow = r.rows[0] || null;
+    }
+
+    if (!cartRow) return res.status(404).json({ error: 'Cart not found' });
+    if (Number(cartRow.user_id) !== Number(userId)) {
+      return res.status(403).json({ error: 'Forbidden: Cart does not belong to you' });
+    }
+    if (cartRow.payment_status !== 'Completed') {
+      return res.status(400).json({ error: 'Cart payment not completed yet' });
+    }
+
+    // Idempotent conversion to bookings
+    const bookings = await require('../../services/cartService').createBookingsFromCart(
+      cartRow.cart_id,
+      userId
+    );
+
+    res.json({ cart_id: cartRow.cart_id, bookings });
+  } catch (err) {
+    next(err);
+  }
+};
