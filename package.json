@@ -34,6 +34,7 @@
     "morgan": "^1.10.1",
     "multer": "^2.0.2",
     "nanoid": "^5.1.6",
+    "node-cron": "^4.2.1",
     "nodemailer": "^7.0.10",
     "otp-generator": "^4.0.1",
     "pdfkit": "^0.17.2",

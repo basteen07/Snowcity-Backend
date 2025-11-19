@@ -5,7 +5,18 @@ const logger = require('./logger');
 const BASE = (process.env.PAYPHI_BASE_URL || 'https://qa.phicommerce.com/pg').replace(/\/+$/, '');
 const SECRET = process.env.PAYPHI_SECRET_KEY || '';
 const MERCHANT_ID = process.env.PAYPHI_MERCHANT_ID || '';
-const APP_URL = (process.env.APP_URL || 'http://localhost:4000').replace(/\/+$/, '');
+
+function normalizeBaseUrl(raw, fallback) {
+  const input = typeof raw === 'string' ? raw : '';
+  const parts = input
+    .split(',')
+    .map((val) => val.trim())
+    .filter(Boolean);
+  const chosen = parts[0] || fallback || '';
+  return (chosen || fallback || 'http://localhost:4000').replace(/\/+$/, '');
+}
+
+const APP_URL = normalizeBaseUrl(process.env.APP_URL, 'http://localhost:4000');
 
 let returnUrlCandidate = (process.env.PAYPHI_RETURN_URL || '').trim();
 if (!returnUrlCandidate) {

@@ -47,7 +47,9 @@ app.use(
 
 // Routes — AFTER CORS!
 const apiRoutes = require('./routes');
+const webhookRoutes = require('./routes/webhooks.routes');
 app.use('/api', apiRoutes);
+app.use('/webhooks', webhookRoutes);
 
 // Echo endpoint
 app.post('/_echo', (req, res) => {
@@ -88,6 +90,30 @@ app.use((err, req, res, next) => {
   res.status(status).json({
     error: err.message || 'Internal Server Error',
   });
+});
+
+const cron = require('node-cron');
+const { pool } = require('./config/db');
+
+// Run every 15 minutes
+cron.schedule('*/15 * * * *', async () => {
+  try {
+    console.log('Running cleanup: Abandoned Pending Orders...');
+    
+    // Delete orders pending for more than 20 minutes
+    // Cascading delete will remove associated bookings and booking_addons
+    const res = await pool.query(
+      `DELETE FROM orders 
+       WHERE payment_status = 'Pending' 
+       AND created_at < NOW() - INTERVAL '20 minutes'`
+    );
+    
+    if (res.rowCount > 0) {
+        console.log(`Cleanup: Removed ${res.rowCount} abandoned orders.`);
+    }
+  } catch (err) {
+    console.error('Cleanup Error:', err);
+  }
 });
 
 module.exports = app;

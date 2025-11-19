@@ -7,14 +7,16 @@ const { defaultLimiter, paymentLimiter } = require('../../middlewares/rateLimite
 // Rate-limit all booking endpoints in this router
 router.use(defaultLimiter);
 
-// Current user's bookings
+// Current user's bookings (Listed by Order)
 router.get('/', requireAuth, bookingsCtrl.listMyBookings);
-router.get('/:id', requireAuth, bookingsCtrl.getMyBookingById);
 
-// Create booking(s)
-router.post('/', requireAuth, bookingsCtrl.createBooking);
+// Get specific Order details (Receipt view)
+router.get('/:id', requireAuth, bookingsCtrl.getOrderDetails);
 
-// PayPhi helpers
+// Create Order (Accepts single item object OR array of items)
+router.post('/', requireAuth, bookingsCtrl.createOrder);
+
+// PayPhi helpers (Operates on Order ID now)
 router.post('/:id/pay/payphi/initiate', requireAuth, paymentLimiter, bookingsCtrl.initiatePayPhiPayment);
 router.get('/:id/pay/payphi/status', requireAuth, bookingsCtrl.checkPayPhiStatus);
 

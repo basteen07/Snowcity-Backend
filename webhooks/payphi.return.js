@@ -1,48 +1,123 @@
 const logger = require('../config/logger');
 const { pool } = require('../config/db');
-const payphiService = require('../services/payphiService');
+const bookingService = require('../services/bookingService');
+
+const pickTranCtx = (payload = {}) => {
+  const entries = Object.entries(payload || {});
+  for (const [key, value] of entries) {
+    if (!key) continue;
+    if (key.toLowerCase() === 'tranctx') {
+      const val = String(value || '').trim();
+      if (val) return val;
+    }
+  }
+  return '';
+};
+
+const pickValue = (payload = {}, target = '') => {
+  if (!target) return undefined;
+  const t = target.toLowerCase();
+  for (const [key, value] of Object.entries(payload || {})) {
+    if ((key || '').toLowerCase() === t) return value;
+  }
+  return undefined;
+};
 
 module.exports = async (req, res) => {
   try {
-    const tranCtx = String(req.query.tranCtx || '').trim();
-    if (!tranCtx) return res.status(400).send('Missing tranCtx');
+    const tranCtx = pickTranCtx(req.query) || pickTranCtx(req.body);
+    const merchantTxnNoRaw =
+      pickValue(req.query, 'merchantTxnNo') ||
+      pickValue(req.body, 'merchantTxnNo') ||
+      pickValue(req.query, 'merchantTxnno') ||
+      pickValue(req.body, 'merchantTxnno');
+    const merchantTxnNo = merchantTxnNoRaw ? String(merchantTxnNoRaw).trim() : '';
 
-    const q = await pool.query(
-      `SELECT booking_id, booking_ref, final_amount, payment_status
-       FROM bookings
-       WHERE payment_ref = $1
-       ORDER BY created_at DESC
-       LIMIT 1`,
-      [tranCtx]
-    );
-    const b = q.rows[0];
-    if (!b) {
-      logger.warn('PayPhi return: booking not found for tranCtx', { tranCtx });
-      return res.status(200).send('OK');
+    if (!tranCtx && !merchantTxnNo) {
+        logger.warn('PayPhi return: Missing tranCtx and merchantTxnNo');
+        return res.status(400).send('Missing tranCtx');
     }
 
-    const { success } = await payphiService.status({
-      merchantTxnNo: b.booking_ref,
-      originalTxnNo: b.booking_ref,
-      amount: b.final_amount,
-    });
+    // 1. Find the Order associated with this payment reference
+    // Note: In the initiate step, we stored tranCtx into orders.payment_ref
+    let order = null;
 
-    if (success && b.payment_status !== 'Completed') {
-      await pool.query(
-        `UPDATE bookings SET payment_status = 'Completed', updated_at = NOW() WHERE booking_id = $1`,
-        [b.booking_id]
+    if (tranCtx) {
+      const q = await pool.query(
+        `SELECT order_id, order_ref, payment_status
+         FROM orders
+         WHERE payment_ref = $1
+         LIMIT 1`,
+        [tranCtx]
       );
-      logger.info('PayPhi return: booking marked paid', { booking_id: b.booking_id });
+      order = q.rows[0] || null;
     }
 
-    const client = process.env.CLIENT_URL || '';
-    const redirectTo = `${client}/payment/return?booking=${encodeURIComponent(
-      b.booking_ref
-    )}&status=${success ? 'success' : 'pending'}`;
+    if (!order && merchantTxnNo) {
+      const byTxn = await pool.query(
+        `SELECT order_id, order_ref, payment_status
+         FROM orders
+         WHERE order_ref = $1
+         LIMIT 1`,
+        [merchantTxnNo]
+      );
+      order = byTxn.rows[0] || null;
+    }
 
-    return res.redirect(redirectTo);
+    if (!order) {
+      logger.warn('PayPhi return: Order not found for tranCtx', { tranCtx });
+      // Even if not found, standard practice is to redirect user to home or error page 
+      // rather than leaving them on a JSON response, but for webhook logic 'OK' is fine.
+      // For a browser redirect endpoint:
+      return res.redirect(`${process.env.CLIENT_URL || ''}/payment/return?status=failed&reason=not_found`);
+    }
+
+    // 2. Trigger the Service Logic
+    // This handles: API check, DB Updates (Order + Bookings), Ticket Generation, Emailing
+    let success = false;
+    try {
+        const statusResult = await bookingService.checkPayPhiStatus(order.order_id);
+        success = statusResult.success;
+        logger.info('PayPhi return: Check status complete', { order_id: order.order_id, success });
+    } catch (svcErr) {
+        logger.error('PayPhi return: Service verification failed', { err: svcErr.message });
+        // If service fails, we assume payment isn't confirmed yet
+    }
+
+    // 3. Redirect to Client
+    const client = process.env.CLIENT_URL || '';
+    const prefix = client.replace(/\/$/, '');
+
+    if (success) {
+      let primaryBookingId = null;
+      try {
+        const bookingRef = await pool.query(
+          'SELECT booking_id FROM bookings WHERE order_id = $1 ORDER BY booking_id ASC LIMIT 1',
+          [order.order_id]
+        );
+        primaryBookingId = bookingRef.rows[0]?.booking_id || null;
+      } catch (lookupErr) {
+        logger.warn('PayPhi return: Failed to fetch primary booking for success redirect', { err: lookupErr.message });
+      }
+
+      const params = new URLSearchParams();
+      if (primaryBookingId) params.set('booking', primaryBookingId);
+      params.set('cart', order.order_ref);
+      if (tranCtx) params.set('tx', tranCtx);
+
+      const successUrl = `${prefix || ''}/payment/success?${params.toString()}`;
+      return res.redirect(successUrl);
+    }
+
+    const fallbackUrl = `${prefix || ''}/payment/return?order=${encodeURIComponent(
+      order.order_ref
+    )}&status=pending`;
+
+    return res.redirect(fallbackUrl);
+
   } catch (err) {
     logger.error('PayPhi return error', { err: err.message });
-    return res.status(200).send('OK');
+    // Fallback redirect
+    return res.redirect(`${process.env.CLIENT_URL || ''}/payment/return?status=error`);
   }
 };

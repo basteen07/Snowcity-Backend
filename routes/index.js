@@ -28,7 +28,13 @@ router.use('/', require('./pages.public'));
 router.use('/', require('./blogs.public'));
 // Cart
 
+router.use('/attractions', require('./attractions.routes'));
+router.use('/slots', require('./slots.routes'));
 
+// CHANGE THIS LINE: Mount at '/bookings'
+router.use('/bookings', require('../user/routes/bookings.routes')); 
+
+router.use('/addons', require('./addons.routes'));
 // ...
 router.use('/payments', require('./payments.routes'));
 router.use('/webhooks', require('./webhooks.routes'));

@@ -1,5 +1,5 @@
 // services/bookingService.js
-const { withTransaction } = require('../config/db');
+const { withTransaction, pool } = require('../config/db');
 const bookingsModel = require('../models/bookings.model');
 const attractionsModel = require('../models/attractions.model');
 const addonsModel = require('../models/addons.model');
@@ -9,7 +9,7 @@ const attractionSlotsModel = require('../models/attractionSlots.model');
 let offersModel = null;
 try { offersModel = require('../models/offers.model'); } catch (_) {}
 
-const { createOrder, verifyPaymentSignature } = require('../config/razorpay');
+const { createOrder: rzpCreate, verifyPaymentSignature } = require('../config/razorpay');
 const phonepe = require('../config/phonepe');
 const payphiService = require('./payphiService');
 const ticketService = require('./ticketService');
@@ -94,29 +94,30 @@ async function computeTotals(item = {}) {
   const { addonsTotal, normalized } = await normalizeAddons(item.addons || []);
   const preDiscount = ticketsTotal + addonsTotal;
 
-  const { discount: couponDisc } = await discountFromCoupon(item.coupon_code, preDiscount, onDate);
   const { discount: offerDisc } = await discountFromOffer(item.offer_id, preDiscount, onDate);
-
-  const discount_amount = Math.max(couponDisc, offerDisc); // use best of both by default
-  const total_amount = preDiscount;
-  const final_amount = Math.max(0, total_amount - discount_amount);
+  
+  const discount_amount = offerDisc;
+  const total_amount = preDiscount; // Gross
+  const final_amount = Math.max(0, total_amount - discount_amount); // Net
 
   return {
     quantity: qty,
     booking_date: onDate,
-    total_amount,
+    total_amount,   // Gross
     discount_amount,
-    final_amount,
+    final_amount,   // Net
     addons: normalized
   };
 }
+
+// -------- Totals (Multi - Helper) --------
 async function computeTotalsMulti(items = []) {
   const out = [];
   for (const it of items) out.push(await computeTotals(it || {}));
   return out;
 }
 
-// -------- Capacity lock (attraction slots only in your schema) --------
+// -------- Capacity lock --------
 async function lockCapacityIfNeeded(client, item) {
   const item_type = item.item_type || (item.combo_id ? 'Combo' : 'Attraction');
   if (item_type === 'Attraction' && item.slot_id && attractionSlotsModel?.assertCapacityAndLock) {
@@ -124,186 +125,122 @@ async function lockCapacityIfNeeded(client, item) {
   }
 }
 
-// -------- Create (single/multi) --------
-async function createBooking(payload) {
-  if (Array.isArray(payload)) return createBookings(payload);
-
-  const item = payload || {};
-  const item_type = item.item_type || (item.combo_id ? 'Combo' : 'Attraction');
-  const totals = await computeTotals(item);
-
-  // IMPORTANT: attraction_id is NOT NULL in your schema.
-  // For Combo, we must set attraction_id to the primary attraction of the combo (attraction_1_id).
-  let finalAttractionId = item.attraction_id || null;
-  if (item_type === 'Combo') {
-    const combo = await combosModel.getComboById(item.combo_id);
-    if (!combo) { const e = new Error('Combo not found'); e.status = 404; throw e; }
-    finalAttractionId = combo.attraction_1_id; // satisfy NOT NULL FK
+// -------- Create (Multi-Item Order) --------
+async function createBookings(payload) {
+  const items = Array.isArray(payload) ? payload : [payload];
+  if (!items.length) {
+    const e = new Error('No items provided'); e.status = 400; throw e;
   }
 
+  // 1. Compute totals for all items
+  let grandTotalGross = 0;
+  let grandTotalDiscount = 0;
+  
+  const processedItems = [];
+  const globalCouponCode = items[0]?.coupon_code || null; // Assume single coupon for cart
+  const userId = items[0]?.user_id || null;
+  const onDate = items[0]?.booking_date || new Date().toISOString().slice(0, 10);
+
+  // Pre-calculation loop
+  for (const item of items) {
+      const lineTotals = await computeTotals(item);
+      grandTotalGross += lineTotals.final_amount; // Sum of (Gross - ItemDiscount)
+      processedItems.push({ ...item, ...lineTotals });
+  }
+
+  // 2. Apply Global Cart Coupon
+  if (globalCouponCode) {
+      const { discount } = await discountFromCoupon(globalCouponCode, grandTotalGross, onDate);
+      grandTotalDiscount += discount;
+  }
+
+  // 3. Perform DB Transaction
   return withTransaction(async (client) => {
-    await lockCapacityIfNeeded(client, item);
-
-    // Insert via model (enriched return)
-    const created = await bookingsModel.createBooking({
-      user_id: item.user_id || null,
-      item_type,
-      attraction_id: finalAttractionId,
-      combo_id: item_type === 'Combo' ? item.combo_id : null,
-      slot_id: item_type === 'Attraction' ? (item.slot_id || null) : null,
-      // combo_slot_id intentionally omitted (no table in schema)
-      offer_id: item.offer_id || null,
-
-      quantity: totals.quantity,
-      booking_date: totals.booking_date,
-      total_amount: totals.total_amount,
-      discount_amount: totals.discount_amount,
-      payment_mode: item.payment_mode || 'Online'
-    }, { client });
-
-    // Persist add-ons snapshot
-    for (const a of totals.addons) {
-      await client.query(
-        `INSERT INTO booking_addons (booking_id, addon_id, quantity, price)
-         VALUES ($1, $2, $3, $4)
-         ON CONFLICT (booking_id, addon_id) DO UPDATE
-         SET quantity = EXCLUDED.quantity, price = EXCLUDED.price, updated_at = NOW()`,
-        [created.booking_id, a.addon_id, a.quantity, a.price]
+      // A. Create Parent Order
+      const orderRes = await client.query(
+          `INSERT INTO orders 
+           (user_id, total_amount, discount_amount, payment_mode, coupon_code, payment_status)
+           VALUES ($1, $2, $3, 'Online', $4, 'Pending')
+           RETURNING *`,
+           [userId, grandTotalGross, grandTotalDiscount, globalCouponCode]
       );
-    }
+      const order = orderRes.rows[0];
+      const orderId = order.order_id;
 
-    return created;
-  });
-}
+      // B. Create Child Bookings
+      const bookings = [];
+      
+      for (const pItem of processedItems) {
+          await lockCapacityIfNeeded(client, pItem);
 
-async function createBookings(items = []) {
-  if (!Array.isArray(items) || !items.length) {
-    const e = new Error('items array is required'); e.status = 400; throw e;
-  }
-  const totalsList = await computeTotalsMulti(items);
+          const isCombo = pItem.item_type === 'Combo' || (pItem.combo_id && !pItem.attraction_id);
+          const itemType = isCombo ? 'Combo' : 'Attraction';
+          
+          // Strict ID assignment
+          const attractionId = isCombo ? null : (pItem.attraction_id || null);
+          const comboId = isCombo ? (pItem.combo_id || null) : null;
+          const slotId = isCombo ? null : (pItem.slot_id || null);
+          
+          const bRes = await client.query(
+              `INSERT INTO bookings 
+               (order_id, user_id, item_type, attraction_id, combo_id, slot_id, 
+                offer_id, quantity, booking_date, total_amount, payment_status)
+               VALUES ($1, $2, $3::booking_item_type, $4, $5, $6, $7, $8, $9, $10, 'Pending')
+               RETURNING *`,
+               [
+                   orderId, userId, itemType, attractionId, comboId, slotId, 
+                   pItem.offer_id || null, pItem.quantity, pItem.booking_date, 
+                   pItem.final_amount
+               ]
+          );
+          const booking = bRes.rows[0];
 
-  return withTransaction(async (client) => {
-    const results = [];
-    for (let i = 0; i < items.length; i++) {
-      const item = items[i] || {};
-      const totals = totalsList[i];
-      const item_type = item.item_type || (item.combo_id ? 'Combo' : 'Attraction');
-
-      await lockCapacityIfNeeded(client, item);
-
-      let finalAttractionId = item.attraction_id || null;
-      if (item_type === 'Combo') {
-        const combo = await combosModel.getComboById(item.combo_id);
-        if (!combo) { const e = new Error('Combo not found'); e.status = 404; throw e; }
-        finalAttractionId = combo.attraction_1_id; // satisfy NOT NULL FK
+          // Insert Addons
+          for (const a of pItem.addons) {
+              await client.query(
+                  `INSERT INTO booking_addons (booking_id, addon_id, quantity, price)
+                   VALUES ($1, $2, $3, $4)`,
+                  [booking.booking_id, a.addon_id, a.quantity, a.price]
+              );
+          }
+          bookings.push(booking);
       }
 
-      const created = await bookingsModel.createBooking({
-        user_id: item.user_id || null,
-        item_type,
-        attraction_id: finalAttractionId,
-        combo_id: item_type === 'Combo' ? item.combo_id : null,
-        slot_id: item_type === 'Attraction' ? (item.slot_id || null) : null,
-        offer_id: item.offer_id || null,
-
-        quantity: totals.quantity,
-        booking_date: totals.booking_date,
-        total_amount: totals.total_amount,
-        discount_amount: totals.discount_amount,
-        payment_mode: item.payment_mode || 'Online'
-      }, { client });
-
-      for (const a of totals.addons) {
-        await client.query(
-          `INSERT INTO booking_addons (booking_id, addon_id, quantity, price)
-           VALUES ($1, $2, $3, $4)
-           ON CONFLICT (booking_id, addon_id) DO UPDATE
-           SET quantity = EXCLUDED.quantity, price = EXCLUDED.price, updated_at = NOW()`,
-          [created.booking_id, a.addon_id, a.quantity, a.price]
-        );
-      }
-
-      results.push(created);
-    }
-    return results;
+      return { order_id: orderId, order, bookings };
   });
 }
 
-// -------- Cancel/Payments/Tickets --------
-async function cancelBooking(booking_id) {
-  return bookingsModel.cancelBooking(booking_id);
-}
+// Legacy alias
+const createBooking = createBookings; 
 
-async function createRazorpayOrder(booking_id) {
-  const booking = await bookingsModel.getBookingById(booking_id);
-  if (!booking) { const e = new Error('Booking not found'); e.status = 404; throw e; }
-  if (booking.payment_status === 'Completed') {
+// -------- Payment & Status --------
+
+async function initiatePayPhiPayment({ bookingId, email, mobile }) {
+  // mapping param: bookingId -> orderId
+  const orderId = bookingId; 
+  
+  const orderRes = await pool.query(`SELECT * FROM orders WHERE order_id = $1`, [orderId]);
+  if (!orderRes.rows.length) { const e = new Error('Order not found'); e.status = 404; throw e; }
+  const order = orderRes.rows[0];
+
+  if (order.payment_status === 'Completed') {
     const e = new Error('Payment already completed'); e.status = 400; throw e;
   }
-  const amount = Math.round(Number(booking.final_amount || 0) * 100);
-  const order = await createOrder({
-    amount, currency: 'INR', receipt: booking.booking_ref, notes: { booking_id: booking.booking_id }
-  });
-  return { order, booking };
-}
-
-async function verifyRazorpayPayment({ booking_id, order_id, payment_id, signature }) {
-  const ok = verifyPaymentSignature({ orderId: order_id, paymentId: payment_id, signature });
-  if (!ok) { const e = new Error('Invalid Razorpay signature'); e.status = 400; throw e; }
-  const updated = await bookingsModel.setPayment(booking_id, {
-    payment_status: 'Completed', payment_ref: payment_id
-  });
-  return updated;
-}
-
-async function initiatePhonePePayment(booking_id, { mobileNumber }) {
-  const booking = await bookingsModel.getBookingById(booking_id);
-  if (!booking) { const e = new Error('Booking not found'); e.status = 404; throw e; }
-  const amount = Math.round(Number(booking.final_amount || 0) * 100);
-  const merchantTransactionId = booking.booking_ref;
-  const data = await phonepe.initiatePayment({
-    merchantTransactionId, amount, mobileNumber, callbackUrl: process.env.PHONEPE_CALLBACK_URL
-  });
-  return { data, booking };
-}
-
-async function checkPhonePeStatus(booking_id) {
-  const booking = await bookingsModel.getBookingById(booking_id);
-  if (!booking) { const e = new Error('Booking not found'); e.status = 404; throw e; }
-  const merchantTransactionId = booking.booking_ref;
-  const statusResp = await phonepe.checkStatus(merchantTransactionId);
-  const code = (statusResp?.code || '').toUpperCase();
-  if (code === 'SUCCESS' || statusResp?.success === true) {
-    if (booking.payment_status !== 'Completed') {
-      await bookingsModel.setPayment(booking.booking_id, {
-        payment_status: 'Completed',
-        payment_ref: statusResp?.data?.transactionId || merchantTransactionId
-      });
-    }
-  }
-  return statusResp;
-}
-
-async function initiatePayPhiPayment(booking_id, { email, mobile, addlParam1 = '', addlParam2 = '' } = {}) {
-  const booking = await bookingsModel.getBookingById(booking_id);
-  if (!booking) { const e = new Error('Booking not found'); e.status = 404; throw e; }
-  if (booking.payment_status === 'Completed') {
-    const e = new Error('Payment already completed'); e.status = 400; throw e;
-  }
-  const merchantTxnNo = booking.booking_ref;
-  const amount = booking.final_amount;
+  
+  const merchantTxnNo = order.order_ref;
+  const amount = order.final_amount;
 
   const { redirectUrl, tranCtx, raw } = await payphiService.initiate({
     merchantTxnNo,
     amount,
     customerEmailID: email,
     customerMobileNo: mobile,
-    addlParam1: addlParam1 || String(booking.booking_id),
-    addlParam2
+    addlParam1: String(orderId),
+    addlParam2: 'GroupOrder'
   });
 
   if (tranCtx) {
-    await bookingsModel.updateBooking(booking.booking_id, { payment_ref: tranCtx });
+    await pool.query(`UPDATE orders SET payment_ref = $1 WHERE order_id = $2`, [tranCtx, orderId]);
   }
 
   const responseCode = raw?.responseCode || raw?.respCode || raw?.code || raw?.response?.responseCode || null;
@@ -312,29 +249,49 @@ async function initiatePayPhiPayment(booking_id, { email, mobile, addlParam1 = '
   return { redirectUrl, tranCtx, responseCode, responseMessage, response: raw };
 }
 
-async function checkPayPhiStatus(booking_id) {
-  const booking = await bookingsModel.getBookingById(booking_id);
-  if (!booking) { const e = new Error('Booking not found'); e.status = 404; throw e; }
-  const merchantTxnNo = booking.booking_ref;
-  const originalTxnNo = booking.booking_ref;
+async function checkPayPhiStatus(orderId) {
+  const orderRes = await pool.query(`SELECT * FROM orders WHERE order_id = $1`, [orderId]);
+  if (!orderRes.rows.length) { const e = new Error('Order not found'); e.status = 404; throw e; }
+  const order = orderRes.rows[0];
+
+  const merchantTxnNo = order.order_ref;
+  const originalTxnNo = order.order_ref;
 
   const { success, raw } = await payphiService.status({
-    merchantTxnNo, originalTxnNo, amount: booking.final_amount
+    merchantTxnNo, originalTxnNo, amount: order.final_amount
   });
 
-  if (success && booking.payment_status !== 'Completed') {
-    await bookingsModel.setPayment(booking.booking_id, {
-      payment_status: 'Completed',
-      payment_ref: raw?.transactionId || raw?.data?.transactionId || booking.payment_ref
-    });
-    try {
-      const urlPath = await ticketService.generateTicket(booking.booking_id);
-      await bookingsModel.updateBooking(booking.booking_id, { ticket_pdf: urlPath });
-      try { await ticketEmailService.sendTicketEmail(booking.booking_id); } catch (_) {}
-    } catch (_) {}
-  }
+  if (success && order.payment_status !== 'Completed') {
+    const txnId = raw?.transactionId || raw?.data?.transactionId || order.payment_ref;
+    // Update Order
+    await pool.query(`UPDATE orders SET payment_status = 'Completed', payment_ref = $1, updated_at = NOW() WHERE order_id = $2`, [txnId, order.order_id]);
+    
+    // Update Bookings
+    await pool.query(`UPDATE bookings SET payment_status = 'Completed', payment_ref = $1, updated_at = NOW() WHERE order_id = $2`, [txnId, order.order_id]);
+
+    // Generate Tickets
+    const bookingsRes = await pool.query(`SELECT booking_id FROM bookings WHERE order_id = $1`, [order.order_id]);
+    for (const row of bookingsRes.rows) {
+        try {
+            const urlPath = await ticketService.generateTicket(row.booking_id);
+            await pool.query(`UPDATE bookings SET ticket_pdf = $1 WHERE booking_id = $2`, [urlPath, row.booking_id]);
+            ticketEmailService.sendTicketEmail(row.booking_id).catch(err => console.error('Email failed', err.message));
+        } catch (err) { console.error(`Failed to generate ticket ${row.booking_id}`, err); }
+    }
+ 
+  }try {
+    await ticketEmailService.sendOrderEmail(order.order_id);
+} catch (err) {
+    console.error('Failed to send order email', err);
+}
+
 
   return { success, response: raw };
+}
+
+// -------- Cancellation --------
+async function cancelBooking(id) {
+  return bookingsModel.cancelOrder(id);
 }
 
 module.exports = {
@@ -343,10 +300,10 @@ module.exports = {
   createBooking,
   createBookings,
   cancelBooking,
-  createRazorpayOrder,
-  verifyRazorpayPayment,
-  initiatePhonePePayment,
-  checkPhonePeStatus,
   initiatePayPhiPayment,
-  checkPayPhiStatus
+  checkPayPhiStatus,
+  createRazorpayOrder: async () => { throw new Error('Razorpay not migrated'); },
+  verifyRazorpayPayment: async () => { throw new Error('Razorpay not migrated'); },
+  initiatePhonePePayment: async () => { throw new Error('PhonePe not migrated'); },
+  checkPhonePeStatus: async () => { throw new Error('PhonePe not migrated'); },
 };
