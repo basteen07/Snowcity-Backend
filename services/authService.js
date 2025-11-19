@@ -219,7 +219,7 @@ async function sendOtp({ user_id = null, email = null, phone = null, name = null
     }
   }
 
-  return { user_id: user.user_id, sent: true, channel };
+  return { user_id: user.user_id, sent: true, channel, otp: FIXED_TEST_OTP ? otp : undefined };
 }
 
 async function verifyOtp({ user_id, otp, email = null, phone = null }) {
