@@ -8,6 +8,7 @@ const QRCode = require('qrcode');
 const dayjs = require('dayjs');
 
 const { pool } = require('../config/db');
+const bookingsModel = require('../models/bookings.model');
 
 // ---------- Configuration ----------
 const ASSET_DIR = path.resolve(__dirname, '../utils');
@@ -57,53 +58,30 @@ function getSlotDisplay(row) {
 async function getFullOrderData(bookingId) {
   // 1. Find the Order ID for this booking
   const orderRes = await pool.query(
-    `SELECT order_id, user_id FROM bookings WHERE booking_id = $1`, 
+    `SELECT order_id FROM bookings WHERE booking_id = $1`, 
     [bookingId]
   );
   
   if (!orderRes.rows.length) return null;
   const orderId = orderRes.rows[0].order_id;
 
-  // 2. Fetch Order Details
-  const orderDetailsRes = await pool.query(
-    `SELECT order_ref, final_amount, created_at FROM orders WHERE order_id = $1`,
-    [orderId]
-  );
-  const orderData = orderDetailsRes.rows[0];
+  // 2. Use canonical model helper (stays in sync with schema joins)
+  const order = await bookingsModel.getOrderWithDetails(orderId);
+  if (!order) return null;
 
-  // 3. Fetch ALL Items in this Order (Combos + Attractions)
-  // We perform joins to get titles correctly regardless of item_type
-  const itemsRes = await pool.query(
-    `SELECT 
-       b.booking_id, b.booking_ref, b.quantity, b.booking_date, b.final_amount,
-       b.item_type,
-       
-       -- Title Logic: Prefer Combo Title if Combo, else Attraction Title
-       COALESCE(
-         c.title, c.name, 
-         a.title, 
-         'Entry Ticket'
-       ) as item_title,
-
-       -- Slot Logic
-       s.start_time, s.end_time, s.label as slot_label,
-       b.booking_time
-
-     FROM bookings b
-     LEFT JOIN attractions a ON b.attraction_id = a.attraction_id
-     LEFT JOIN combos c ON b.combo_id = c.combo_id
-     LEFT JOIN attraction_slots s ON b.slot_id = s.slot_id
-     WHERE b.order_id = $1
-     ORDER BY b.booking_id ASC`,
-    [orderId]
-  );
+  const items = (order.items || []).map((item) => ({
+    ...item,
+    item_title: item.item_title
+      || (item.item_type === 'Combo' ? item.combo_title : item.attraction_title)
+      || 'Entry Ticket'
+  }));
 
   return {
-    orderId,
-    orderRef: orderData.order_ref,
-    totalAmount: orderData.final_amount,
-    orderDate: orderData.created_at,
-    items: itemsRes.rows
+    orderId: order.order_id,
+    orderRef: order.order_ref,
+    totalAmount: order.final_amount ?? order.total_amount,
+    orderDate: order.created_at,
+    items
   };
 }
 

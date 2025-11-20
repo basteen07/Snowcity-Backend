@@ -5,6 +5,7 @@ const bookingService = require('../../services/bookingService');
 const payphiService = require('../../services/payphiService');
 const { createApiLog } = require('../../models/apiLogs.model');
 const ticketService = require('../../services/ticketService');
+const ticketEmailService = require('../../services/ticketEmailService');
 
 // Helpers
 function isRoot(req) {
@@ -114,7 +115,6 @@ async function listBookings(req, res, next) {
         a.title AS attraction_title,
         ${comboTitleExpr} AS combo_title,
         o.title AS offer_title,
-        o.code AS offer_code,
         ${itemTitleExpr} AS item_title
       FROM bookings b
       ${joins}
@@ -147,20 +147,35 @@ async function listBookings(req, res, next) {
 async function getBookingById(req, res, next) {
   try {
     const id = Number(req.params.id);
-    const { rows } = await pool.query(
-      `SELECT
-         b.*, u.name AS user_name, u.email AS user_email, u.phone AS user_phone,
-         a.title AS attraction_title
-       FROM bookings b
-       LEFT JOIN users u ON u.user_id = b.user_id
-       LEFT JOIN attractions a ON a.attraction_id = b.attraction_id
-       WHERE b.booking_id = $1`,
-      [id]
-    );
+    const comboTitleExpr = `COALESCE(NULLIF(CONCAT_WS(' + ', NULLIF(a1.title, ''), NULLIF(a2.title, '')), ''), CONCAT('Combo #', c.combo_id::text))`;
+    const itemTitleExpr = `CASE WHEN b.item_type = 'Combo' THEN ${comboTitleExpr} ELSE a.title END`;
+    const detailSql = `
+      SELECT
+        b.*,
+        u.name AS user_name,
+        u.email AS user_email,
+        u.phone AS user_phone,
+        a.title AS attraction_title,
+        ${comboTitleExpr} AS combo_title,
+        ${itemTitleExpr} AS item_title,
+        o.title AS offer_title,
+        COALESCE(s.start_time, cs.start_time) AS slot_start_time,
+        COALESCE(s.end_time, cs.end_time)   AS slot_end_time
+      FROM bookings b
+      LEFT JOIN users u ON u.user_id = b.user_id
+      LEFT JOIN attractions a ON a.attraction_id = b.attraction_id
+      LEFT JOIN combos c ON c.combo_id = b.combo_id
+      LEFT JOIN attractions a1 ON a1.attraction_id = c.attraction_1_id
+      LEFT JOIN attractions a2 ON a2.attraction_id = c.attraction_2_id
+      LEFT JOIN offers o ON o.offer_id = b.offer_id
+      LEFT JOIN attraction_slots s ON s.slot_id = b.slot_id
+      LEFT JOIN combo_slots cs ON cs.combo_slot_id = b.combo_slot_id
+      WHERE b.booking_id = $1
+    `;
+    const { rows } = await pool.query(detailSql, [id]);
     const row = rows[0];
     if (!row) return res.status(404).json({ error: 'Booking not found' });
 
-    // Scope check
     if (!isRoot(req)) {
       const scoped = allowedAttractions(req);
       if (row.attraction_id && !scoped.includes(Number(row.attraction_id))) {
@@ -280,6 +295,38 @@ async function updateBooking(req, res, next) {
       }
     }
     res.json(updated);
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function resendTicket(req, res, next) {
+  try {
+    const id = Number(req.params.id);
+    const booking = await bookingsModel.getBookingById(id);
+    if (!booking) return res.status(404).json({ error: 'Booking not found' });
+
+    if (!isRoot(req)) {
+      const scoped = allowedAttractions(req);
+      if (booking.attraction_id && !scoped.includes(Number(booking.attraction_id))) {
+        return res.status(403).json({ error: 'Forbidden: attraction not in scope' });
+      }
+    }
+
+    if (!booking.user_id) {
+      return res.status(400).json({ error: 'Cannot resend ticket without user information' });
+    }
+
+    let ticketPath = booking.ticket_pdf;
+    if (!ticketPath) {
+      ticketPath = await ticketService.generateTicket(id);
+      await bookingsModel.updateBooking(id, { ticket_pdf: ticketPath });
+    }
+
+    await bookingsModel.updateBooking(id, { email_sent: false });
+    const result = await ticketEmailService.sendTicketEmail(id);
+
+    res.json({ success: true, ticket_pdf: ticketPath, email: result });
   } catch (err) {
     next(err);
   }
@@ -427,4 +474,5 @@ module.exports = {
   checkPayPhiStatusAdmin,
   initiatePayPhiPaymentAdmin,
   refundPayPhi,
+  resendTicket,
 };

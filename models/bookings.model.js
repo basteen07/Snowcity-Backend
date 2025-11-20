@@ -92,9 +92,9 @@ async function getBaseSqlParts() {
             ELSE a.title 
         END AS item_title,
 
-        -- Slot times
-        s.start_time AS slot_start_time,
-        s.end_time AS slot_end_time
+        -- Slot times (supports attraction or combo slots)
+        COALESCE(s.start_time, cs.start_time) AS slot_start_time,
+        COALESCE(s.end_time, cs.end_time)     AS slot_end_time
     `;
 
     const joins = `
@@ -103,6 +103,7 @@ async function getBaseSqlParts() {
         LEFT JOIN attractions a1c     ON a1c.attraction_id = c.attraction_1_id
         LEFT JOIN attractions a2c     ON a2c.attraction_id = c.attraction_2_id
         LEFT JOIN attraction_slots s  ON s.slot_id         = b.slot_id
+        LEFT JOIN combo_slots     cs  ON cs.combo_slot_id  = b.combo_slot_id
     `;
 
     return { select, joins };

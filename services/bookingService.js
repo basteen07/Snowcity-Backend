@@ -6,6 +6,7 @@ const addonsModel = require('../models/addons.model');
 const couponsModel = require('../models/coupons.model');
 const combosModel = require('../models/combos.model');
 const attractionSlotsModel = require('../models/attractionSlots.model');
+const comboSlotsModel = require('../models/comboSlots.model');
 let offersModel = null;
 try { offersModel = require('../models/offers.model'); } catch (_) {}
 
@@ -122,6 +123,8 @@ async function lockCapacityIfNeeded(client, item) {
   const item_type = item.item_type || (item.combo_id ? 'Combo' : 'Attraction');
   if (item_type === 'Attraction' && item.slot_id && attractionSlotsModel?.assertCapacityAndLock) {
     await attractionSlotsModel.assertCapacityAndLock(client, item.slot_id);
+  } else if (item_type === 'Combo' && item.combo_slot_id && comboSlotsModel?.assertCapacityAndLock) {
+    await comboSlotsModel.assertCapacityAndLock(client, item.combo_slot_id);
   }
 }
 
@@ -180,17 +183,18 @@ async function createBookings(payload) {
           const attractionId = isCombo ? null : (pItem.attraction_id || null);
           const comboId = isCombo ? (pItem.combo_id || null) : null;
           const slotId = isCombo ? null : (pItem.slot_id || null);
+          const comboSlotId = isCombo ? (pItem.combo_slot_id || null) : null;
           
           const bRes = await client.query(
               `INSERT INTO bookings 
-               (order_id, user_id, item_type, attraction_id, combo_id, slot_id, 
+               (order_id, user_id, item_type, attraction_id, combo_id, slot_id, combo_slot_id,
                 offer_id, quantity, booking_date, total_amount, payment_status)
-               VALUES ($1, $2, $3::booking_item_type, $4, $5, $6, $7, $8, $9, $10, 'Pending')
+               VALUES ($1, $2, $3::booking_item_type, $4, $5, $6, $7, $8, $9, $10, $11, 'Pending')
                RETURNING *`,
                [
-                   orderId, userId, itemType, attractionId, comboId, slotId, 
-                   pItem.offer_id || null, pItem.quantity, pItem.booking_date, 
-                   pItem.final_amount
+                  orderId, userId, itemType, attractionId, comboId, slotId, comboSlotId,
+                  pItem.offer_id || null, pItem.quantity, pItem.booking_date, 
+                  pItem.final_amount
                ]
           );
           const booking = bRes.rows[0];

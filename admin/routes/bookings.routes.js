@@ -29,6 +29,7 @@ router.get('/:id', guard('requirePermissions', 'bookings:read'), ctrl.getBooking
 router.post('/', guard('requirePermissions', 'bookings:write'), ctrl.createManualBooking);
 router.put('/:id', guard('requirePermissions', 'bookings:write'), ctrl.updateBooking);
 router.post('/:id/cancel', guard('requirePermissions', 'bookings:write'), ctrl.cancelBooking);
+router.post('/:id/resend-ticket', guard('requirePermissions', 'bookings:write'), ctrl.resendTicket);
 router.delete('/:id', guard('requirePermissions', 'bookings:write'), ctrl.deleteBooking);
 
 // PayPhi (admin)
