@@ -1,7 +1,38 @@
 const combosModel = require('../models/combos.model');
+const { applyOfferPricing } = require('./offerPricing');
+
+const toNumber = (value, fallback = 0) => {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : fallback;
+};
+
+async function withPricing(row) {
+  if (!row) return row;
+  const base = toNumber(row.combo_price ?? row.price ?? row.amount ?? 0, 0);
+  const pricing = await applyOfferPricing({
+    targetType: 'combo',
+    targetId: row.combo_id,
+    baseAmount: base,
+  });
+
+  row.pricing = {
+    base_price: base,
+    final_price: pricing.unit,
+    discount_amount: pricing.discount,
+    discount_percent: pricing.discount_percent,
+    offer: pricing.offer,
+  };
+  row.display_price = pricing.unit;
+  row.offer = pricing.offer;
+  row.offer_discount_amount = pricing.discount;
+  row.offer_discount_percent = pricing.discount_percent;
+
+  return row;
+}
 
 async function list({ active = null } = {}) {
-  return combosModel.listCombos({ active });
+  const rows = await combosModel.listCombos({ active });
+  return Promise.all(rows.map((row) => withPricing({ ...row })));
 }
 
 async function getById(id) {
@@ -11,7 +42,7 @@ async function getById(id) {
     err.status = 404;
     throw err;
   }
-  return row;
+  return withPricing({ ...row });
 }
 
 async function create(payload) {

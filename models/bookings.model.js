@@ -66,6 +66,7 @@ function mapOrder(row) {
     payment_status: row.payment_status,
     payment_mode: row.payment_mode,
     payment_ref: row.payment_ref,
+    payment_txn_no: row.payment_txn_no,
     created_at: row.created_at,
     // We might attach items here later manually
     items: [] 

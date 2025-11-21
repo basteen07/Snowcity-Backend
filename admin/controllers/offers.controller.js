@@ -28,9 +28,59 @@ exports.getOfferById = async (req, res, next) => {
   }
 };
 
+function normalizeRule(rule = {}) {
+  return {
+    target_type: rule.target_type || rule.targetType || 'attraction',
+    target_id: rule.target_id ?? rule.targetId ?? null,
+    applies_to_all: !!rule.applies_to_all || !!rule.appliesToAll,
+    date_from: rule.date_from ?? rule.dateFrom ?? null,
+    date_to: rule.date_to ?? rule.dateTo ?? null,
+    time_from: rule.time_from ?? rule.timeFrom ?? null,
+    time_to: rule.time_to ?? rule.timeTo ?? null,
+    slot_type: rule.slot_type || rule.slotType || null,
+    slot_id: rule.slot_id ?? rule.slotId ?? null,
+    rule_discount_type: rule.rule_discount_type || rule.ruleDiscountType || null,
+    rule_discount_value: rule.rule_discount_value ?? rule.ruleDiscountValue ?? null,
+    priority: rule.priority ?? 100,
+  };
+}
+
+function normalizePayload(body = {}) {
+  const {
+    title,
+    description,
+    image_url,
+    rule_type,
+    discount_percent,
+    discount_type,
+    discount_value,
+    max_discount,
+    valid_from,
+    valid_to,
+    active,
+    rules,
+  } = body;
+
+  return {
+    title,
+    description,
+    image_url,
+    rule_type,
+    discount_percent,
+    discount_type,
+    discount_value,
+    max_discount,
+    valid_from,
+    valid_to,
+    active,
+    rules: Array.isArray(rules) ? rules.map(normalizeRule) : [],
+  };
+}
+
 exports.createOffer = async (req, res, next) => {
   try {
-    const row = await offersModel.createOffer(req.body || {});
+    const payload = normalizePayload(req.body);
+    const row = await offersModel.createOffer(payload);
     res.status(201).json(row);
   } catch (err) {
     next(err);
@@ -40,7 +90,8 @@ exports.createOffer = async (req, res, next) => {
 exports.updateOffer = async (req, res, next) => {
   try {
     const id = Number(req.params.id);
-    const row = await offersModel.updateOffer(id, req.body || {});
+    const payload = normalizePayload(req.body);
+    const row = await offersModel.updateOffer(id, payload);
     if (!row) return res.status(404).json({ error: 'Offer not found' });
     res.json(row);
   } catch (err) {

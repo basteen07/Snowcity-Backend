@@ -1,7 +1,38 @@
 const attractionsModel = require('../models/attractions.model');
+const { applyOfferPricing } = require('./offerPricing');
+
+const toNumber = (value, fallback = 0) => {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : fallback;
+};
+
+async function withPricing(row) {
+  if (!row) return row;
+  const base = toNumber(row.base_price ?? row.price ?? row.amount ?? 0, 0);
+  const pricing = await applyOfferPricing({
+    targetType: 'attraction',
+    targetId: row.attraction_id,
+    baseAmount: base,
+  });
+
+  row.pricing = {
+    base_price: base,
+    final_price: pricing.unit,
+    discount_amount: pricing.discount,
+    discount_percent: pricing.discount_percent,
+    offer: pricing.offer,
+  };
+  row.display_price = pricing.unit;
+  row.offer = pricing.offer;
+  row.offer_discount_amount = pricing.discount;
+  row.offer_discount_percent = pricing.discount_percent;
+
+  return row;
+}
 
 async function list({ search = '', active = null, limit = 50, offset = 0 }) {
-  return attractionsModel.listAttractions({ search, active, limit, offset });
+  const rows = await attractionsModel.listAttractions({ search, active, limit, offset });
+  return Promise.all(rows.map((row) => withPricing({ ...row })));
 }
 
 async function getById(id) {
@@ -11,7 +42,7 @@ async function getById(id) {
     err.status = 404;
     throw err;
   }
-  return row;
+  return withPricing({ ...row });
 }
 
 async function create(payload) {

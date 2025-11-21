@@ -23,6 +23,17 @@ const pickValue = (payload = {}, target = '') => {
   return undefined;
 };
 
+const resolveClientBaseUrl = () => {
+  const raw = process.env.CLIENT_URL || '';
+  const entries = raw
+    .split(',')
+    .map((val) => String(val || '').trim())
+    .filter(Boolean);
+  const fallback = 'https://snowcity.netlify.app';
+  const base = entries[0] || fallback;
+  return base.replace(/\/$/, '');
+};
+
 module.exports = async (req, res) => {
   try {
     const tranCtx = pickTranCtx(req.query) || pickTranCtx(req.body);
@@ -85,8 +96,7 @@ module.exports = async (req, res) => {
     }
 
     // 3. Redirect to Client
-    const client = process.env.CLIENT_URL || '';
-    const prefix = client.replace(/\/$/, '');
+    const prefix = resolveClientBaseUrl();
 
     if (success) {
       let primaryBookingId = null;
@@ -105,11 +115,11 @@ module.exports = async (req, res) => {
       params.set('cart', order.order_ref);
       if (tranCtx) params.set('tx', tranCtx);
 
-      const successUrl = `${prefix || ''}/payment/success?${params.toString()}`;
+      const successUrl = `${prefix}/payment/success?${params.toString()}`;
       return res.redirect(successUrl);
     }
 
-    const fallbackUrl = `${prefix || ''}/payment/return?order=${encodeURIComponent(
+    const fallbackUrl = `${prefix}/payment/return?order=${encodeURIComponent(
       order.order_ref
     )}&status=pending`;
 

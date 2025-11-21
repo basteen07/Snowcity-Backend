@@ -18,6 +18,61 @@ const ticketEmailService = require('./ticketEmailService');
 
 const toNumber = (n, d = 0) => (Number.isFinite(Number(n)) ? Number(n) : d);
 
+async function applyOfferPricing({
+  targetType,
+  targetId,
+  slotType = null,
+  slotId = null,
+  baseAmount = 0,
+  booking_date = null,
+  booking_time = null,
+}) {
+  const base = toNumber(baseAmount, 0);
+  if (!offersModel?.findApplicableOfferRule || !targetType || !targetId) {
+    return { unit: base, discount: 0, offer: null };
+  }
+
+  const match = await offersModel.findApplicableOfferRule({
+    targetType,
+    targetId,
+    slotType,
+    slotId,
+    date: booking_date,
+    time: booking_time,
+  });
+  if (!match) return { unit: base, discount: 0, offer: null };
+
+  const { offer, rule } = match;
+  let discountType = rule?.rule_discount_type || offer.discount_type || (offer.discount_percent ? 'percent' : null);
+  let discountValue = rule?.rule_discount_value ?? offer.discount_value ?? offer.discount_percent ?? 0;
+  if (!discountType || !discountValue) {
+    return { unit: base, discount: 0, offer: null };
+  }
+
+  discountType = String(discountType).toLowerCase();
+  let discount = discountType === 'amount'
+    ? Number(discountValue)
+    : (Number(discountValue) / 100) * base;
+
+  if (offer.max_discount != null) {
+    discount = Math.min(discount, Number(offer.max_discount));
+  }
+  discount = Math.min(discount, base);
+
+  const finalUnit = toNumber(base - discount, 0);
+  return {
+    unit: finalUnit,
+    discount: toNumber(discount, 0),
+    offer: {
+      offer_id: offer.offer_id,
+      rule_id: rule.rule_id,
+      title: offer.title,
+      discount_type: discountType,
+      discount_value: Number(discountValue),
+    },
+  };
+}
+
 // -------- Pricing helpers --------
 async function priceFromAttraction(attraction_id) {
   const a = await attractionsModel.getAttractionById(attraction_id);
@@ -60,44 +115,52 @@ async function discountFromCoupon(coupon_code, total, onDate) {
   const disc = await couponsModel.computeDiscount(coupon, total);
   return { discount: toNumber(disc?.discount ?? disc?.amount, 0), coupon };
 }
-async function discountFromOffer(offer_id, total, onDate) {
-  if (!offer_id || !offersModel) return { discount: 0, offer: null };
-  try {
-    const offer = await offersModel.getOfferById(offer_id, { activeOnly: true, onDate });
-    if (!offer) return { discount: 0, offer: null };
-    const pct = toNumber(offer.discount_percent ?? offer.percent ?? offer.percentage, 0);
-    const flat = toNumber(offer.flat_amount ?? offer.amount ?? offer.discount_amount, 0);
-    const cap = toNumber(offer.max_discount ?? offer.maximum_discount ?? offer.cap, Infinity);
-    let discount = 0;
-    if (pct > 0) discount += (pct / 100) * total;
-    discount += flat;
-    return { discount: Math.min(discount, cap, total), offer };
-  } catch { return { discount: 0, offer: null }; }
-}
-
 // -------- Totals (per item) --------
 async function computeTotals(item = {}) {
   const item_type = item.item_type || (item.combo_id ? 'Combo' : 'Attraction');
   const qty = Math.max(1, toNumber(item.quantity ?? 1, 1));
   const onDate = item.booking_date || new Date().toISOString().slice(0, 10);
 
-  let unit = 0;
+  let baseUnit = 0;
+  let slotType = null;
+  let slotId = null;
   if (item_type === 'Combo') {
     const { base } = await priceFromCombo(item.combo_id);
-    unit = base;
+    baseUnit = base;
+    if (item.combo_slot_id) {
+      slotType = 'combo';
+      slotId = item.combo_slot_id;
+    }
   } else {
     const { base } = await priceFromAttraction(item.attraction_id);
     const { slotPrice } = await priceFromAttractionSlot(item.slot_id);
-    unit = slotPrice != null ? slotPrice : base;
+    baseUnit = slotPrice != null ? slotPrice : base;
+    if (item.slot_id) {
+      slotType = 'attraction';
+      slotId = item.slot_id;
+    }
   }
 
-  const ticketsTotal = unit * qty;
-  const { addonsTotal, normalized } = await normalizeAddons(item.addons || []);
-  const preDiscount = ticketsTotal + addonsTotal;
+  const pricing = await applyOfferPricing({
+    targetType: item_type === 'Combo' ? 'combo' : 'attraction',
+    targetId: item_type === 'Combo' ? item.combo_id : item.attraction_id,
+    slotType,
+    slotId,
+    baseAmount: baseUnit,
+    booking_date: item.booking_date,
+    booking_time: item.booking_time,
+  });
 
-  const { discount: offerDisc } = await discountFromOffer(item.offer_id, preDiscount, onDate);
-  
-  const discount_amount = offerDisc;
+  const unit = pricing.unit;
+  const unitDiscount = pricing.discount;
+  const ticketsTotal = unit * qty;
+  const baseTicketsTotal = baseUnit * qty;
+  const offerDiscountTotal = unitDiscount * qty;
+
+  const { addonsTotal, normalized } = await normalizeAddons(item.addons || []);
+  const preDiscount = baseTicketsTotal + addonsTotal;
+
+  const discount_amount = offerDiscountTotal;
   const total_amount = preDiscount; // Gross
   const final_amount = Math.max(0, total_amount - discount_amount); // Net
 
@@ -107,7 +170,12 @@ async function computeTotals(item = {}) {
     total_amount,   // Gross
     discount_amount,
     final_amount,   // Net
-    addons: normalized
+    addons: normalized,
+    base_unit_price: baseUnit,
+    unit_price: unit,
+    unit_discount: unitDiscount,
+    offer: pricing.offer,
+    offer_id: pricing.offer?.offer_id || null,
   };
 }
 
@@ -136,8 +204,8 @@ async function createBookings(payload) {
   }
 
   // 1. Compute totals for all items
-  let grandTotalGross = 0;
-  let grandTotalDiscount = 0;
+  let grossBeforeDiscount = 0;
+  let offerDiscountTotal = 0;
   
   const processedItems = [];
   const globalCouponCode = items[0]?.coupon_code || null; // Assume single coupon for cart
@@ -147,16 +215,20 @@ async function createBookings(payload) {
   // Pre-calculation loop
   for (const item of items) {
       const lineTotals = await computeTotals(item);
-      grandTotalGross += lineTotals.final_amount; // Sum of (Gross - ItemDiscount)
+      grossBeforeDiscount += lineTotals.total_amount;
+      offerDiscountTotal += lineTotals.discount_amount;
       processedItems.push({ ...item, ...lineTotals });
   }
 
   // 2. Apply Global Cart Coupon
+  let couponDiscount = 0;
   if (globalCouponCode) {
-      const { discount } = await discountFromCoupon(globalCouponCode, grandTotalGross, onDate);
-      grandTotalDiscount += discount;
+      const { discount } = await discountFromCoupon(globalCouponCode, Math.max(grossBeforeDiscount - offerDiscountTotal, 0), onDate);
+      couponDiscount = discount;
   }
 
+  const grandTotalDiscount = offerDiscountTotal + couponDiscount;
+  
   // 3. Perform DB Transaction
   return withTransaction(async (client) => {
       // A. Create Parent Order
@@ -165,7 +237,7 @@ async function createBookings(payload) {
            (user_id, total_amount, discount_amount, payment_mode, coupon_code, payment_status)
            VALUES ($1, $2, $3, 'Online', $4, 'Pending')
            RETURNING *`,
-           [userId, grandTotalGross, grandTotalDiscount, globalCouponCode]
+           [userId, grossBeforeDiscount, grandTotalDiscount, globalCouponCode]
       );
       const order = orderRes.rows[0];
       const orderId = order.order_id;
@@ -188,13 +260,13 @@ async function createBookings(payload) {
           const bRes = await client.query(
               `INSERT INTO bookings 
                (order_id, user_id, item_type, attraction_id, combo_id, slot_id, combo_slot_id,
-                offer_id, quantity, booking_date, total_amount, payment_status)
-               VALUES ($1, $2, $3::booking_item_type, $4, $5, $6, $7, $8, $9, $10, $11, 'Pending')
+                offer_id, quantity, booking_date, total_amount, discount_amount, payment_status)
+               VALUES ($1, $2, $3::booking_item_type, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'Pending')
                RETURNING *`,
                [
                   orderId, userId, itemType, attractionId, comboId, slotId, comboSlotId,
                   pItem.offer_id || null, pItem.quantity, pItem.booking_date, 
-                  pItem.final_amount
+                  pItem.total_amount, pItem.discount_amount
                ]
           );
           const booking = bRes.rows[0];
@@ -232,7 +304,12 @@ async function initiatePayPhiPayment({ bookingId, email, mobile }) {
   }
   
   const merchantTxnNo = order.order_ref;
-  const amount = order.final_amount;
+  const amount = order.final_amount ?? Math.max(0, Number(order.total_amount || 0) - Number(order.discount_amount || 0));
+  if (!amount || Number(amount) <= 0) {
+    const e = new Error('Order total must be greater than zero to initiate payment');
+    e.status = 400;
+    throw e;
+  }
 
   const { redirectUrl, tranCtx, raw } = await payphiService.initiate({
     merchantTxnNo,
@@ -279,16 +356,19 @@ async function checkPayPhiStatus(orderId) {
         try {
             const urlPath = await ticketService.generateTicket(row.booking_id);
             await pool.query(`UPDATE bookings SET ticket_pdf = $1 WHERE booking_id = $2`, [urlPath, row.booking_id]);
-            ticketEmailService.sendTicketEmail(row.booking_id).catch(err => console.error('Email failed', err.message));
-        } catch (err) { console.error(`Failed to generate ticket ${row.booking_id}`, err); }
+            await ticketEmailService.sendTicketEmail(row.booking_id);
+        } catch (err) {
+            console.error(`Ticket email workflow failed for booking ${row.booking_id}`, err);
+        }
+    }
+
+    try {
+        await ticketEmailService.sendOrderEmail(order.order_id);
+    } catch (err) {
+        console.error('Failed to send order email', err);
     }
  
-  }try {
-    await ticketEmailService.sendOrderEmail(order.order_id);
-} catch (err) {
-    console.error('Failed to send order email', err);
-}
-
+  }
 
   return { success, response: raw };
 }

@@ -1,10 +1,21 @@
 const nodemailer = require('nodemailer');
 const logger = require('./logger');
 
+const port = Number(process.env.SMTP_PORT || 587);
+const secure = (() => {
+  const raw = process.env.SMTP_SECURE;
+  if (raw == null) {
+    // Implicitly treat port 465 as SMTPS
+    return port === 465;
+  }
+  return ['1', 'true', 'yes', 'on'].includes(String(raw).trim().toLowerCase());
+})();
+
 const transporter = nodemailer.createTransport({
   host: process.env.SMTP_HOST,
-  port: Number(process.env.SMTP_PORT || 587),
-  secure: String(process.env.SMTP_SECURE || 'false').toLowerCase() === 'true',
+  port,
+  secure,
+
   auth: {
     user: process.env.SMTP_USER,
     pass: process.env.SMTP_PASS,

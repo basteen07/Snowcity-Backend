@@ -5,12 +5,68 @@ const attractionsModel = require('../models/attractions.model');
 const combosModel = require('../models/combos.model');
 const comboSlotsModel = require('../models/comboSlots.model');
 const { getSlotById } = require('../models/attractionSlots.model');
+const offersModel = require('../models/offers.model');
 const bookingsModel = require('../models/bookings.model');
 const bookingService = require('./bookingService');
 const payphiService = require('./payphiService');
 const payphi = require('../config/payphi');
 
 const round2 = (x) => Number((Math.round((Number(x) || 0) * 100) / 100).toFixed(2));
+
+async function applyOfferPricing({
+  targetType,
+  targetId,
+  slotType = null,
+  slotId = null,
+  baseAmount = 0,
+  booking_date = null,
+  booking_time = null,
+}) {
+  const base = round2(baseAmount);
+  if (!offersModel?.findApplicableOfferRule || !targetType || !targetId) {
+    return { unit: base, discount: 0, offer: null };
+  }
+
+  const match = await offersModel.findApplicableOfferRule({
+    targetType,
+    targetId,
+    slotType,
+    slotId,
+    date: booking_date,
+    time: booking_time,
+  });
+  if (!match) return { unit: base, discount: 0, offer: null };
+
+  const { offer, rule } = match;
+  let discountType = rule?.rule_discount_type || offer.discount_type || (offer.discount_percent ? 'percent' : null);
+  let discountValue = rule?.rule_discount_value ?? offer.discount_value ?? offer.discount_percent ?? 0;
+  if (!discountType || !discountValue) {
+    return { unit: base, discount: 0, offer: null };
+  }
+
+  discountType = String(discountType).toLowerCase();
+  let discount = discountType === 'amount'
+    ? Number(discountValue)
+    : (Number(discountValue) / 100) * base;
+
+  if (offer.max_discount != null) {
+    discount = Math.min(discount, Number(offer.max_discount));
+  }
+  discount = Math.min(discount, base);
+
+  const finalUnit = round2(base - discount);
+  return {
+    unit: finalUnit,
+    discount: round2(discount),
+    offer: {
+      offer_id: offer.offer_id,
+      rule_id: rule.rule_id,
+      title: offer.title,
+      discount_type: discountType,
+      discount_value: Number(discountValue),
+    },
+  };
+}
 
 async function getOrCreateCart({ user_id = null, session_id = null, payment_mode = 'Online' }) {
   return cartModel.upsertOpenCart({ user_id, session_id, payment_mode });
@@ -22,7 +78,7 @@ async function getCartWithItems(cart) {
   return { cart, items };
 }
 
-async function resolveAttractionUnitPrice({ attraction_id, slot_id = null }) {
+async function resolveAttractionUnitPrice({ attraction_id, slot_id = null, booking_date = null, booking_time = null }) {
   const attraction = await attractionsModel.getAttractionById(attraction_id);
   if (!attraction) {
     const err = new Error('Attraction not found');
@@ -49,10 +105,26 @@ async function resolveAttractionUnitPrice({ attraction_id, slot_id = null }) {
     }
     if (slot.price != null) unit = Number(slot.price);
   }
-  return { unit: round2(unit), attraction };
+  const baseUnit = round2(unit);
+  const pricing = await applyOfferPricing({
+    targetType: 'attraction',
+    targetId: attraction_id,
+    slotType: slot_id ? 'attraction' : null,
+    slotId: slot_id,
+    baseAmount: baseUnit,
+    booking_date,
+    booking_time,
+  });
+  return {
+    unit: pricing.unit,
+    base_unit: baseUnit,
+    discount: pricing.discount,
+    offer: pricing.offer,
+    attraction,
+  };
 }
 
-async function resolveComboUnitPrice({ combo_id, combo_slot_id = null }) {
+async function resolveComboUnitPrice({ combo_id, combo_slot_id = null, booking_date = null, booking_time = null }) {
   const combo = await combosModel.getComboById(combo_id);
   if (!combo) {
     const err = new Error('Combo not found');
@@ -79,7 +151,23 @@ async function resolveComboUnitPrice({ combo_id, combo_slot_id = null }) {
     }
     if (slot.price != null) unit = Number(slot.price);
   }
-  return { unit: round2(unit), combo };
+  const baseUnit = round2(unit);
+  const pricing = await applyOfferPricing({
+    targetType: 'combo',
+    targetId: combo_id,
+    slotType: combo_slot_id ? 'combo' : null,
+    slotId: combo_slot_id,
+    baseAmount: baseUnit,
+    booking_date,
+    booking_time,
+  });
+  return {
+    unit: pricing.unit,
+    base_unit: baseUnit,
+    discount: pricing.discount,
+    offer: pricing.offer,
+    combo,
+  };
 }
 
 async function addItem({ user_id = null, session_id = null, item }) {
@@ -99,22 +187,35 @@ async function addItem({ user_id = null, session_id = null, item }) {
   const qty = Math.max(1, Number(quantity || 1));
 
   let unit = 0;
+  let pricingMeta = null;
   if (item_type === 'attraction') {
     if (!attraction_id) {
       const err = new Error('attraction_id is required');
       err.status = 400;
       throw err;
     }
-    const resolved = await resolveAttractionUnitPrice({ attraction_id, slot_id });
+    const resolved = await resolveAttractionUnitPrice({ attraction_id, slot_id, booking_date, booking_time });
     unit = resolved.unit;
+    pricingMeta = {
+      base_unit_price: resolved.base_unit,
+      final_unit_price: resolved.unit,
+      discount_amount: resolved.discount,
+      offer: resolved.offer,
+    };
   } else if (item_type === 'combo') {
     if (!combo_id) {
       const err = new Error('combo_id is required');
       err.status = 400;
       throw err;
     }
-    const resolved = await resolveComboUnitPrice({ combo_id, combo_slot_id });
+    const resolved = await resolveComboUnitPrice({ combo_id, combo_slot_id, booking_date, booking_time });
     unit = resolved.unit;
+    pricingMeta = {
+      base_unit_price: resolved.base_unit,
+      final_unit_price: resolved.unit,
+      discount_amount: resolved.discount,
+      offer: resolved.offer,
+    };
   } else {
     const err = new Error('Unsupported item_type');
     err.status = 400;
@@ -133,6 +234,7 @@ async function addItem({ user_id = null, session_id = null, item }) {
     unit_price: unit,
     meta,
   });
+  if (pricingMeta) cartItem.pricing = pricingMeta;
   const updatedCart = await cartModel.recomputeTotals(cart.cart_id);
   const items = await cartModel.listItems(cart.cart_id);
   return { cart: updatedCart, items, added: cartItem };
@@ -170,8 +272,16 @@ async function updateItem({ user_id = null, session_id = null, cart_item_id, fie
       const resolved = await resolveAttractionUnitPrice({
         attraction_id: next.attraction_id,
         slot_id: next.slot_id || null,
+        booking_date: next.booking_date || null,
+        booking_time: next.booking_time || null,
       });
       unitUpdate = resolved.unit;
+      next.pricing = {
+        base_unit_price: resolved.base_unit,
+        final_unit_price: resolved.unit,
+        discount_amount: resolved.discount,
+        offer: resolved.offer,
+      };
     } else if (next.item_type === 'combo') {
       if (!next.combo_id) {
         const err = new Error('combo_id is required for combo item');
@@ -181,8 +291,16 @@ async function updateItem({ user_id = null, session_id = null, cart_item_id, fie
       const resolved = await resolveComboUnitPrice({
         combo_id: next.combo_id,
         combo_slot_id: next.combo_slot_id || null,
+        booking_date: next.booking_date || null,
+        booking_time: next.booking_time || null,
       });
       unitUpdate = resolved.unit;
+      next.pricing = {
+        base_unit_price: resolved.base_unit,
+        final_unit_price: resolved.unit,
+        discount_amount: resolved.discount,
+        offer: resolved.offer,
+      };
     } else {
       const err = new Error('Unsupported item_type');
       err.status = 400;
