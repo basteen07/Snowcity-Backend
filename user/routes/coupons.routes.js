@@ -4,6 +4,9 @@ const validate = require('../../middlewares/validate');
 const { optionalAuth } = require('../../middlewares/authMiddleware');
 const { getCouponByCodeParam, applyCouponBody } = require('../../validators/coupons.validators');
 
+// List coupons
+router.get('/', optionalAuth, ctrl.listCoupons);
+
 // Get by code
 router.get('/:code', optionalAuth, validate(getCouponByCodeParam), ctrl.getCouponByCode);
 

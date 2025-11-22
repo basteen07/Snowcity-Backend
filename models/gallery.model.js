@@ -1,5 +1,19 @@
 const { pool } = require('../config/db');
 
+const TARGET_TYPES = new Set(['none', 'attraction', 'combo']);
+
+function normalizeTargetType(value) {
+  const str = (value || 'none').toString().toLowerCase();
+  return TARGET_TYPES.has(str) ? str : 'none';
+}
+
+function normalizeTargetRef(targetType, ref) {
+  if (targetType === 'none') return null;
+  if (ref === null || ref === undefined || ref === '') return null;
+  const num = Number(ref);
+  return Number.isFinite(num) ? num : null;
+}
+
 function map(row) {
   if (!row) return null;
   return {
@@ -8,28 +22,42 @@ function map(row) {
     url: row.url,
     title: row.title,
     description: row.description,
+    target_type: row.target_type || 'none',
+    target_ref_id: row.target_ref_id,
+    target_name: row.target_name || null,
     active: row.active,
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
 }
 
-async function create({ media_type, url, title = null, description = null, active = true }) {
+async function create({ media_type, url, title = null, description = null, target_type = 'none', target_ref_id = null, active = true }) {
+  const normalizedType = normalizeTargetType(target_type);
+  const normalizedRef = normalizeTargetRef(normalizedType, target_ref_id);
   const { rows } = await pool.query(
-    `INSERT INTO gallery_items (media_type, url, title, description, active)
-     VALUES ($1, $2, $3, $4, $5)
+    `INSERT INTO gallery_items (media_type, url, title, description, target_type, target_ref_id, active)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
      RETURNING *`,
-    [media_type, url, title, description, active]
+    [media_type, url, title, description, normalizedType, normalizedRef, active]
   );
   return map(rows[0]);
 }
 
 async function getById(id) {
-  const { rows } = await pool.query(`SELECT * FROM gallery_items WHERE gallery_item_id = $1`, [id]);
+  const { rows } = await pool.query(
+    `SELECT gi.*, CASE
+        WHEN gi.target_type = 'attraction' THEN (SELECT title FROM attractions a WHERE a.attraction_id = gi.target_ref_id)
+        WHEN gi.target_type = 'combo' THEN (SELECT title FROM combos c WHERE c.combo_id = gi.target_ref_id)
+        ELSE NULL
+      END AS target_name
+     FROM gallery_items gi
+     WHERE gi.gallery_item_id = $1`,
+    [id]
+  );
   return map(rows[0]);
 }
 
-async function list({ active = null, q = '', limit = 50, offset = 0 } = {}) {
+async function list({ active = null, q = '', target_type = null, target_ref_id = null, limit = 50, offset = 0 } = {}) {
   const where = [];
   const params = [];
   let i = 1;
@@ -42,16 +70,47 @@ async function list({ active = null, q = '', limit = 50, offset = 0 } = {}) {
     params.push(`%${q}%`);
     i += 1;
   }
+  const normalizedFilterType = target_type && target_type !== 'any'
+    ? normalizeTargetType(target_type)
+    : null;
+  if (normalizedFilterType) {
+    where.push(`target_type = $${i++}`);
+    params.push(normalizedFilterType);
+  }
+  if (target_ref_id != null && target_ref_id !== '') {
+    const ref = Number(target_ref_id);
+    if (!Number.isFinite(ref)) {
+      throw new Error('Invalid target_ref_id filter');
+    }
+    where.push(`target_ref_id = $${i++}`);
+    params.push(ref);
+  }
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
   const { rows } = await pool.query(
-    `SELECT * FROM gallery_items ${whereSql} ORDER BY created_at DESC LIMIT $${i} OFFSET $${i + 1}`,
+    `SELECT gi.*, CASE
+        WHEN gi.target_type = 'attraction' THEN (SELECT title FROM attractions a WHERE a.attraction_id = gi.target_ref_id)
+        WHEN gi.target_type = 'combo' THEN (SELECT title FROM combos c WHERE c.combo_id = gi.target_ref_id)
+        ELSE NULL
+      END AS target_name
+     FROM gallery_items gi
+     ${whereSql.replace(/gallery_items/g, 'gi')}
+     ORDER BY gi.created_at DESC LIMIT $${i} OFFSET $${i + 1}`,
     [...params, limit, offset]
   );
   return rows.map(map);
 }
 
 async function update(id, fields = {}) {
-  const entries = Object.entries(fields).filter(([, v]) => v !== undefined);
+  const input = { ...fields };
+  const hasTargetType = Object.prototype.hasOwnProperty.call(input, 'target_type');
+  const hasTargetRef = Object.prototype.hasOwnProperty.call(input, 'target_ref_id');
+  if (hasTargetType || hasTargetRef) {
+    const normalizedType = hasTargetType ? normalizeTargetType(input.target_type) : undefined;
+    const normalizedRef = normalizeTargetRef(normalizedType || (fields.target_type ? normalizeTargetType(fields.target_type) : 'none'), input.target_ref_id);
+    if (hasTargetType) input.target_type = normalizedType;
+    if (hasTargetRef || normalizedType === 'none') input.target_ref_id = normalizedRef;
+  }
+  const entries = Object.entries(input).filter(([, v]) => v !== undefined);
   if (!entries.length) return getById(id);
   const sets = [];
   const params = [];
