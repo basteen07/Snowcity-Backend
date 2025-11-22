@@ -34,6 +34,25 @@ const resolveClientBaseUrl = () => {
   return base.replace(/\/$/, '');
 };
 
+const resolveAppBaseUrl = () => {
+  const raw = process.env.APP_URL || '';
+  const entries = raw
+    .split(',')
+    .map((val) => String(val || '').trim())
+    .filter(Boolean);
+  const fallback = process.env.APP_PUBLIC_URL || 'https://snowcity-backend.onrender.com';
+  const base = entries[0] || fallback;
+  return base.replace(/\/$/, '');
+};
+
+const absoluteFromPath = (path = '') => {
+  if (!path) return null;
+  if (/^https?:\/\//i.test(path)) return path;
+  const base = resolveAppBaseUrl();
+  const normalized = path.startsWith('/') ? path : `/${path}`;
+  return `${base}${normalized}`;
+};
+
 module.exports = async (req, res) => {
   try {
     const tranCtx = pickTranCtx(req.query) || pickTranCtx(req.body);
@@ -100,12 +119,23 @@ module.exports = async (req, res) => {
 
     if (success) {
       let primaryBookingId = null;
+      let ticketPath = null;
       try {
         const bookingRef = await pool.query(
-          'SELECT booking_id FROM bookings WHERE order_id = $1 ORDER BY booking_id ASC LIMIT 1',
+          'SELECT booking_id, ticket_pdf FROM bookings WHERE order_id = $1 ORDER BY booking_id ASC LIMIT 1',
           [order.order_id]
         );
-        primaryBookingId = bookingRef.rows[0]?.booking_id || null;
+        const firstBooking = bookingRef.rows[0];
+        primaryBookingId = firstBooking?.booking_id || null;
+        ticketPath = firstBooking?.ticket_pdf || null;
+
+        if (!ticketPath) {
+          const ticketRes = await pool.query(
+            'SELECT ticket_pdf FROM bookings WHERE order_id = $1 AND ticket_pdf IS NOT NULL ORDER BY booking_id ASC LIMIT 1',
+            [order.order_id]
+          );
+          ticketPath = ticketRes.rows[0]?.ticket_pdf || null;
+        }
       } catch (lookupErr) {
         logger.warn('PayPhi return: Failed to fetch primary booking for success redirect', { err: lookupErr.message });
       }
@@ -114,6 +144,8 @@ module.exports = async (req, res) => {
       if (primaryBookingId) params.set('booking', primaryBookingId);
       params.set('cart', order.order_ref);
       if (tranCtx) params.set('tx', tranCtx);
+      const absTicketUrl = absoluteFromPath(ticketPath);
+      if (absTicketUrl) params.set('ticket', absTicketUrl);
 
       const successUrl = `${prefix}/payment/success?${params.toString()}`;
       return res.redirect(successUrl);
