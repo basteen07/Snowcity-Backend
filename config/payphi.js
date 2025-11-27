@@ -6,6 +6,32 @@ const BASE = (process.env.PAYPHI_BASE_URL || 'https://qa.phicommerce.com/pg').re
 const SECRET = process.env.PAYPHI_SECRET_KEY || '';
 const MERCHANT_ID = process.env.PAYPHI_MERCHANT_ID || '';
 
+const DEFAULT_INITIATE_HASH_ORDER = [
+  'addlParam1',
+  'addlParam2',
+  'amount',
+  'currencyCode',
+  'customerEmailID',
+  'customerMobileNo',
+  'merchantId',
+  'merchantTxnNo',
+  'payType',
+  'returnURL',
+  'transactionType',
+  'txnDate'
+];
+
+function parseHashOrder(raw, fallback = []) {
+  const list = String(raw || '')
+    .split(',')
+    .map((val) => val.trim())
+    .filter(Boolean);
+  return list.length ? list : fallback;
+}
+
+const INITIATE_HASH_ORDER = parseHashOrder(process.env.PAYPHI_INITIATE_HASH_ORDER, DEFAULT_INITIATE_HASH_ORDER);
+const COMMAND_HASH_ORDER = parseHashOrder(process.env.PAYPHI_COMMAND_HASH_ORDER);
+
 function normalizeBaseUrl(raw, fallback) {
   const input = typeof raw === 'string' ? raw : '';
   const parts = input
@@ -50,11 +76,30 @@ function formatTxnDate(date = new Date()) {
 // - Exclude keys with null/undefined/''
 // - Exclude secureHash
 // - Include all others present
-function buildCanonicalConcatString(obj) {
-  const keys = Object.keys(obj || {})
-    .filter((k) => k !== 'secureHash' && obj[k] !== null && obj[k] !== undefined && String(obj[k]) !== '')
-    .sort(); // ascending by parameter name
-  return keys.map((k) => String(obj[k])).join('');
+function buildCanonicalConcatString(obj, preferredOrder = []) {
+  const payload = obj || {};
+  const seen = new Set();
+  const values = [];
+
+  const appendKey = (key) => {
+    if (!key || seen.has(key) || key === 'secureHash') return;
+    const val = payload[key];
+    if (val === null || val === undefined) return;
+    const str = String(val);
+    if (str === '') return;
+    values.push(str);
+    seen.add(key);
+  };
+
+  preferredOrder.forEach(appendKey);
+
+  const remaining = Object.keys(payload)
+    .filter((key) => key !== 'secureHash' && !seen.has(key) && payload[key] !== null && payload[key] !== undefined && String(payload[key]) !== '')
+    .sort();
+
+  remaining.forEach(appendKey);
+
+  return values.join('');
 }
 
 // HMAC-SHA256 -> lowercase hex
@@ -75,7 +120,7 @@ function debugHash(kind, obj, hash) {
 
 // PUBLIC: initiate request hashing (HMAC over canonical string)
 function computeInitiateHash(payload) {
-  const text = buildCanonicalConcatString(payload);
+  const text = buildCanonicalConcatString(payload, INITIATE_HASH_ORDER);
   const h = hmacSha256HexLower(text, SECRET);
   debugHash('initiate', payload, h);
   return h;
@@ -83,7 +128,7 @@ function computeInitiateHash(payload) {
 
 // PUBLIC: command (STATUS/REFUND) hashing (same canonical builder)
 function computeCommandHash(payload) {
-  const text = buildCanonicalConcatString(payload);
+  const text = buildCanonicalConcatString(payload, COMMAND_HASH_ORDER);
   const h = hmacSha256HexLower(text, SECRET);
   debugHash('command', payload, h);
   return h;

@@ -3,6 +3,7 @@ const { pool } = require('../../config/db');
 
 const BYPASS = String(process.env.DISABLE_ADMIN_PERMISSIONS || 'false').toLowerCase() === 'true';
 const SUPERUSER_IDS = new Set([1]);
+const PRIVILEGED_ROLES = new Set(['root', 'superadmin', 'admin']);
 
 // Helpers
 function getUserId(req) {
@@ -17,8 +18,7 @@ function hasBypass(req) {
   const uid = getUserId(req);
   if (uid != null && SUPERUSER_IDS.has(uid)) return true;
   const roles = (req.user?.roles || []).map((r) => String(r).toLowerCase());
-  // Allow full bypass for root (and optionally superadmin)
-  return roles.includes('root') || roles.includes('superadmin');
+  return roles.some((role) => PRIVILEGED_ROLES.has(role));
 }
 
 async function loadPermissions(userId) {

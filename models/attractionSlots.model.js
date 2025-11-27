@@ -1,5 +1,38 @@
 const { pool, withTransaction } = require('../config/db');
 
+const MONTH_LETTERS = ['j', 'f', 'm', 'a', 'm', 'j', 'j', 'a', 's', 'o', 'n', 'd'];
+
+function normalizeDayTokens(dateStr) {
+  const date = new Date(`${dateStr}T00:00:00Z`);
+  if (Number.isNaN(date.getTime())) {
+    return { monthLetter: 'x', dayToken: '00' };
+  }
+  const monthLetter = MONTH_LETTERS[date.getUTCMonth()] || 'x';
+  const dayToken = String(date.getUTCDate()).padStart(2, '0');
+  return { monthLetter, dayToken };
+}
+
+async function computeAttractionSlotCode({ attraction_id, start_date, start_time, capacity }) {
+  if (!attraction_id || !start_date || !start_time) return null;
+  const { rows: attractionRows } = await pool.query(`SELECT title FROM attractions WHERE attraction_id = $1`, [attraction_id]);
+  const title = attractionRows[0]?.title || '';
+  const nameLetter = title.trim().charAt(0).toLowerCase() || 'x';
+  const { monthLetter, dayToken } = normalizeDayTokens(start_date);
+
+  const { rows: countRows } = await pool.query(
+    `SELECT COUNT(*)::int AS count
+     FROM attraction_slots
+     WHERE attraction_id = $1
+       AND start_date = $2::date
+       AND start_time < $3::time`,
+    [attraction_id, start_date, start_time]
+  );
+  const slotIndex = (countRows[0]?.count || 0) + 1;
+  const slotToken = String(Math.min(slotIndex, 99)).padStart(2, '0');
+  const capToken = String(Math.min(Number(capacity) || 0, 999)).padStart(3, '0');
+  return `${nameLetter}${monthLetter}${dayToken}${slotToken}${capToken}`;
+}
+
 async function getSlotById(slot_id) {
   const { rows } = await pool.query(`SELECT * FROM attraction_slots WHERE slot_id = $1`, [slot_id]);
   return rows[0] || null;
@@ -63,14 +96,15 @@ async function createSlot(payload) {
     price = Number.isNaN(n) ? null : n;
   }
   const available = rawAvailable === 'false' ? false : Boolean(rawAvailable);
+  const slotCode = await computeAttractionSlotCode({ attraction_id: aid, start_date, start_time, capacity: cap });
 
   try {
     const { rows } = await pool.query(
       `INSERT INTO attraction_slots
-       (attraction_id, start_date, end_date, start_time, end_time, capacity, price, available)
-       VALUES ($1, $2::date, $3::date, $4::time, $5::time, $6, $7, $8)
+       (attraction_id, start_date, end_date, start_time, end_time, capacity, price, available, slot_code)
+       VALUES ($1, $2::date, $3::date, $4::time, $5::time, $6, $7, $8, $9)
        RETURNING *`,
-      [aid, start_date, end_date, start_time, end_time, cap, price, available]
+      [aid, start_date, end_date, start_time, end_time, cap, price, available, slotCode]
     );
     return rows[0];
   } catch (err) {
@@ -78,10 +112,10 @@ async function createSlot(payload) {
     if (err && (err.code === '42703' || /column\s+"?price"?\s+does not exist/i.test(String(err.message)))) {
       const { rows } = await pool.query(
         `INSERT INTO attraction_slots
-         (attraction_id, start_date, end_date, start_time, end_time, capacity, available)
-         VALUES ($1, $2::date, $3::date, $4::time, $5::time, $6, $7)
+         (attraction_id, start_date, end_date, start_time, end_time, capacity, available, slot_code)
+         VALUES ($1, $2::date, $3::date, $4::time, $5::time, $6, $7, $8)
          RETURNING *`,
-        [aid, start_date, end_date, start_time, end_time, cap, available]
+        [aid, start_date, end_date, start_time, end_time, cap, available, slotCode]
       );
       return rows[0];
     }
@@ -90,12 +124,16 @@ async function createSlot(payload) {
 }
 
 async function updateSlot(slot_id, fields = {}) {
+  const current = await getSlotById(slot_id);
+  if (!current) return null;
+
   const entries = Object.entries(fields).filter(([, v]) => v !== undefined);
   if (!entries.length) return getSlotById(slot_id);
 
   const sets = [];
   const params = [];
-  entries.forEach(([k, v], idx) => {
+  const nextState = { ...current };
+  entries.forEach(([k, v]) => {
     let val = v;
     if (k === 'price') {
       if (val === '' || val === null || val === undefined) val = null;
@@ -105,18 +143,36 @@ async function updateSlot(slot_id, fields = {}) {
       }
     } else if (k === 'capacity' || k === 'attraction_id') {
       val = Number(v);
+      nextState[k] = val;
     } else if (k === 'available') {
       val = v === 'false' ? false : Boolean(v);
+      nextState[k] = val;
     }
     const cast =
       ['start_date', 'end_date'].includes(k) ? '::date' : ['start_time', 'end_time'].includes(k) ? '::time' : '';
-    sets.push(`${k} = $${idx + 1}${cast}`);
-    params.push(val);
+    nextState[k] = val;
+    sets.push({ key: k, cast, value: val });
+  });
+
+  const needsRecode = ['attraction_id', 'start_date', 'start_time', 'capacity'].some((key) => fields[key] !== undefined);
+  if (needsRecode) {
+    const slotCode = await computeAttractionSlotCode({
+      attraction_id: nextState.attraction_id,
+      start_date: nextState.start_date,
+      start_time: nextState.start_time,
+      capacity: nextState.capacity,
+    });
+    sets.push({ key: 'slot_code', cast: '', value: slotCode });
+  }
+
+  const sqlFragments = sets.map((entry, idx) => {
+    params.push(entry.value);
+    return `${entry.key} = $${idx + 1}${entry.cast}`;
   });
   params.push(slot_id);
 
   const { rows } = await pool.query(
-    `UPDATE attraction_slots SET ${sets.join(', ')}, updated_at = NOW()
+    `UPDATE attraction_slots SET ${sqlFragments.join(', ')}, updated_at = NOW()
      WHERE slot_id = $${params.length}
      RETURNING *`,
     params

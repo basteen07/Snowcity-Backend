@@ -23,6 +23,7 @@ router.use('/blogs', require('./blogs.routes'));
 router.use('/banners', require('../user/routes/banners.routes'));
 router.use('/uploads', require('./uploads.routes'));
 router.use('/chatbot', require('./chatbot.routes'));
+router.use('/social', require('./social.routes'));
 router.use('/', require('./combos.public'));
 router.use('/', require('./gallery.public'));
 router.use('/', require('./pages.public'));

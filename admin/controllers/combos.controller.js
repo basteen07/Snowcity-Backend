@@ -1,4 +1,5 @@
 const combosModel = require('../../models/combos.model');
+const slotScheduler = require('../../services/slotScheduler');
 
 exports.listCombos = async (req, res, next) => {
   try {
@@ -24,6 +25,15 @@ exports.getComboById = async (req, res, next) => {
 exports.createCombo = async (req, res, next) => {
   try {
     const row = await combosModel.createCombo(req.body || {});
+    try {
+      await slotScheduler.generateComboSlots({
+        comboId: row.combo_id,
+        days: 30,
+        skipHolidays: false,
+      });
+    } catch (scheduleErr) {
+      console.error('Auto slot generation failed for combo', row.combo_id, scheduleErr);
+    }
     res.status(201).json(row);
   } catch (err) {
     next(err);

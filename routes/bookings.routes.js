@@ -1,26 +1,12 @@
 const express = require('express');
 const router = express.Router();
-
 const { defaultLimiter } = require('../middlewares/rateLimiter');
+const userRoutes = require('../user/routes/bookings.routes');
 
-// Global rate limiter for public API
+// Global rate limiter for this router
 router.use(defaultLimiter);
 
-// Public/user routes
-router.use('/auth', require('./auth.routes'));
-router.use('/users', require('./users.routes'));
-router.use('/attractions', require('./attractions.routes'));
-router.use('/slots', require('./slots.routes'));
-router.use('/', require('../user/routes/bookings.routes'));
-router.use('/addons', require('./addons.routes'));
-router.use('/combos', require('./combos.routes'));
-router.use('/coupons', require('./coupons.routes'));
-router.use('/offers', require('./offers.routes'));
-
-// Admin routes (protected inside admin/router)
-router.use('/admin', require('../admin/routes'));
-
-// Base
-router.get('/', (req, res) => res.json({ api: 'SnowCity', version: '1.0.0' }));
+// Mount the actual booking routes
+router.use('/', userRoutes);
 
 module.exports = router;

@@ -7,6 +7,10 @@
     "test": "tests"
   },
   "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js",
+    "extend:slots": "node scripts/extendSlots.js",
+    "extend:slots:daily": "cross-env SLOT_EXTEND_DAYS=1 node scripts/extendSlots.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],

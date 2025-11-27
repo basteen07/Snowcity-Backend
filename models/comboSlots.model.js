@@ -1,5 +1,7 @@
 const { pool } = require('../config/db');
 
+const MONTH_LETTERS = ['j', 'f', 'm', 'a', 'm', 'j', 'j', 'a', 's', 'o', 'n', 'd'];
+
 function mapComboSlot(row) {
   if (!row) return null;
   return {
@@ -12,9 +14,39 @@ function mapComboSlot(row) {
     capacity: row.capacity,
     price: row.price != null ? Number(row.price) : null,
     available: row.available,
+    combo_slot_code: row.combo_slot_code,
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
+}
+
+function normalizeDayTokens(dateStr) {
+  const date = new Date(`${dateStr}T00:00:00Z`);
+  if (Number.isNaN(date.getTime())) {
+    return { monthLetter: 'x', dayToken: '00' };
+  }
+  const monthLetter = MONTH_LETTERS[date.getUTCMonth()] || 'x';
+  const dayToken = String(date.getUTCDate()).padStart(2, '0');
+  return { monthLetter, dayToken };
+}
+
+async function computeComboSlotCode({ combo_id, start_date, start_time, capacity }) {
+  if (!combo_id || !start_date || !start_time) return null;
+  const prefix = `c${combo_id}`;
+  const { monthLetter, dayToken } = normalizeDayTokens(start_date);
+
+  const { rows } = await pool.query(
+    `SELECT COUNT(*)::int AS count
+     FROM combo_slots
+     WHERE combo_id = $1
+       AND start_date = $2::date
+       AND start_time < $3::time`,
+    [combo_id, start_date, start_time]
+  );
+  const slotIndex = (rows[0]?.count || 0) + 1;
+  const slotToken = String(Math.min(slotIndex, 99)).padStart(2, '0');
+  const capToken = String(Math.min(Number(capacity) || 0, 999)).padStart(3, '0');
+  return `${prefix}${monthLetter}${dayToken}${slotToken}${capToken}`;
 }
 
 async function getSlotById(combo_slot_id) {
@@ -73,26 +105,35 @@ async function createSlot(payload) {
     available = true,
   } = payload;
 
+  const cid = Number(combo_id);
+  const cap = Number(capacity);
+  const slotCode = await computeComboSlotCode({ combo_id: cid, start_date, start_time, capacity: cap });
+
   const { rows } = await pool.query(
     `INSERT INTO combo_slots
-       (combo_id, start_date, end_date, start_time, end_time, capacity, price, available)
-     VALUES ($1, $2::date, $3::date, $4::time, $5::time, $6, $7, $8)
+       (combo_id, start_date, end_date, start_time, end_time, capacity, price, available, combo_slot_code)
+     VALUES ($1, $2::date, $3::date, $4::time, $5::time, $6, $7, $8, $9)
      RETURNING *`,
-    [Number(combo_id), start_date, end_date, start_time, end_time, Number(capacity), price, available]
+    [cid, start_date, end_date, start_time, end_time, cap, price, available, slotCode]
   );
   return mapComboSlot(rows[0]);
 }
 
 async function updateSlot(combo_slot_id, fields = {}) {
+  const current = await getSlotById(combo_slot_id);
+  if (!current) return null;
+
   const entries = Object.entries(fields).filter(([, v]) => v !== undefined);
-  if (!entries.length) return getSlotById(combo_slot_id);
+  if (!entries.length) return current;
 
   const sets = [];
   const params = [];
-  entries.forEach(([key, value], idx) => {
+  const nextState = { ...current };
+  entries.forEach(([key, value]) => {
     let val = value;
     if (key === 'capacity' || key === 'combo_id') {
       val = Number(val);
+      nextState[key] = val;
     } else if (key === 'price') {
       if (val === '' || val === null || val === undefined) val = null;
       else {
@@ -101,19 +142,36 @@ async function updateSlot(combo_slot_id, fields = {}) {
       }
     } else if (key === 'available') {
       val = val === 'false' ? false : Boolean(val);
+      nextState[key] = val;
     }
     const cast = ['start_date', 'end_date'].includes(key)
       ? '::date'
       : ['start_time', 'end_time'].includes(key)
       ? '::time'
       : '';
-    sets.push(`${key} = $${idx + 1}${cast}`);
-    params.push(val);
+    nextState[key] = val;
+    sets.push({ key, cast, value: val });
+  });
+
+  const needsRecode = ['combo_id', 'start_date', 'start_time', 'capacity'].some((key) => fields[key] !== undefined);
+  if (needsRecode) {
+    const slotCode = await computeComboSlotCode({
+      combo_id: nextState.combo_id,
+      start_date: nextState.start_date,
+      start_time: nextState.start_time,
+      capacity: nextState.capacity,
+    });
+    sets.push({ key: 'combo_slot_code', cast: '', value: slotCode });
+  }
+
+  const fragments = sets.map((entry, idx) => {
+    params.push(entry.value);
+    return `${entry.key} = $${idx + 1}${entry.cast}`;
   });
   params.push(combo_slot_id);
 
   const { rows } = await pool.query(
-    `UPDATE combo_slots SET ${sets.join(', ')}, updated_at = NOW()
+    `UPDATE combo_slots SET ${fragments.join(', ')}, updated_at = NOW()
      WHERE combo_slot_id = $${params.length}
      RETURNING *`,
     params

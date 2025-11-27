@@ -6,13 +6,15 @@ const toNumber = (value, fallback = 0) => {
   return Number.isFinite(num) ? num : fallback;
 };
 
-async function withPricing(row) {
+async function withPricing(row, { booking_date = null, booking_time = null } = {}) {
   if (!row) return row;
   const base = toNumber(row.base_price ?? row.price ?? row.amount ?? 0, 0);
   const pricing = await applyOfferPricing({
     targetType: 'attraction',
     targetId: row.attraction_id,
     baseAmount: base,
+    booking_date,
+    booking_time,
   });
 
   row.pricing = {
@@ -30,19 +32,19 @@ async function withPricing(row) {
   return row;
 }
 
-async function list({ search = '', active = null, limit = 50, offset = 0 }) {
+async function list({ search = '', active = null, limit = 50, offset = 0, booking_date = null, booking_time = null }) {
   const rows = await attractionsModel.listAttractions({ search, active, limit, offset });
-  return Promise.all(rows.map((row) => withPricing({ ...row })));
+  return Promise.all(rows.map((row) => withPricing({ ...row }, { booking_date, booking_time })));
 }
 
-async function getById(id) {
+async function getById(id, { booking_date = null, booking_time = null } = {}) {
   const row = await attractionsModel.getAttractionById(id);
   if (!row) {
     const err = new Error('Attraction not found');
     err.status = 404;
     throw err;
   }
-  return withPricing({ ...row });
+  return withPricing({ ...row }, { booking_date, booking_time });
 }
 
 async function create(payload) {

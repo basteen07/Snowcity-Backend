@@ -6,13 +6,15 @@ const toNumber = (value, fallback = 0) => {
   return Number.isFinite(num) ? num : fallback;
 };
 
-async function withPricing(row) {
+async function withPricing(row, { booking_date = null, booking_time = null } = {}) {
   if (!row) return row;
   const base = toNumber(row.combo_price ?? row.price ?? row.amount ?? 0, 0);
   const pricing = await applyOfferPricing({
     targetType: 'combo',
     targetId: row.combo_id,
     baseAmount: base,
+    booking_date,
+    booking_time,
   });
 
   row.pricing = {
@@ -30,19 +32,19 @@ async function withPricing(row) {
   return row;
 }
 
-async function list({ active = null } = {}) {
+async function list({ active = null, booking_date = null, booking_time = null } = {}) {
   const rows = await combosModel.listCombos({ active });
-  return Promise.all(rows.map((row) => withPricing({ ...row })));
+  return Promise.all(rows.map((row) => withPricing({ ...row }, { booking_date, booking_time })));
 }
 
-async function getById(id) {
+async function getById(id, { booking_date = null, booking_time = null } = {}) {
   const row = await combosModel.getComboById(id);
   if (!row) {
     const err = new Error('Combo not found');
     err.status = 404;
     throw err;
   }
-  return withPricing({ ...row });
+  return withPricing({ ...row }, { booking_date, booking_time });
 }
 
 async function create(payload) {

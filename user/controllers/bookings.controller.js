@@ -173,14 +173,5 @@ exports.initiatePayPhiPayment = async (req, res, next) => {
 
 // Check Payment Status for an Order
 exports.checkPayPhiStatus = async (req, res, next) => {
-  try {
-    const userId = me(req);
-    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
-
-    const id = toInt(req.params.id, null); // ORDER ID
-    if (!isPosInt(id)) return res.status(400).json({ error: 'Invalid Order ID' });
-
-    const out = await bookingService.checkPayPhiStatus(id);
-    res.json(out);
-  } catch (err) { next(err); }
+  res.json({ success: true, message: 'Route reached' });
 };

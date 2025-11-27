@@ -1,7 +1,21 @@
 const comboSlotsModel = require('../models/comboSlots.model');
+const holidayService = require('./holidayService');
+
+async function excludeHolidaySlots(slots = []) {
+  if (!slots.length) return slots;
+  const dates = slots.map((slot) => slot?.start_date).filter(Boolean).sort();
+  if (!dates.length) return slots;
+  const from = dates[0];
+  const to = dates[dates.length - 1];
+  const holidays = await holidayService.list({ from, to });
+  if (!holidays?.length) return slots;
+  const holidaySet = new Set(holidays.map((h) => String(h.holiday_date)));
+  return slots.filter((slot) => !holidaySet.has(String(slot.start_date)));
+}
 
 async function list({ combo_id = null, date = null, start_date = null, end_date = null } = {}) {
-  return comboSlotsModel.listSlots({ combo_id, date, start_date, end_date });
+  const slots = await comboSlotsModel.listSlots({ combo_id, date, start_date, end_date });
+  return excludeHolidaySlots(slots);
 }
 
 async function getById(id) {

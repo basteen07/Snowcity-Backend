@@ -29,7 +29,7 @@ const resolveClientBaseUrl = () => {
     .split(',')
     .map((val) => String(val || '').trim())
     .filter(Boolean);
-  const fallback = 'https://snowcity.netlify.app';
+  const fallback = 'http://localhost:4000';
   const base = entries[0] || fallback;
   return base.replace(/\/$/, '');
 };
@@ -40,7 +40,7 @@ const resolveAppBaseUrl = () => {
     .split(',')
     .map((val) => String(val || '').trim())
     .filter(Boolean);
-  const fallback = process.env.APP_PUBLIC_URL || 'https://snowcity-backend.onrender.com';
+  const fallback = process.env.APP_PUBLIC_URL || 'http://localhost:4000';
   const base = entries[0] || fallback;
   return base.replace(/\/$/, '');
 };

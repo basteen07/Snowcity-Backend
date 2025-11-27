@@ -69,19 +69,54 @@ exports.createAdmin = async (req, res, next) => {
   }
 };
 
+function hasFullAdminAccess(roles = []) {
+  const normalized = roles.map((r) => String(r).toLowerCase());
+  return normalized.includes('admin') || normalized.includes('root') || normalized.includes('superadmin');
+}
+
+async function loadAccessMap(userId) {
+  const { rows } = await pool.query(
+    `SELECT resource_type, resource_id FROM admin_access WHERE user_id = $1 ORDER BY resource_type, resource_id`,
+    [userId]
+  );
+  return rows.reduce((acc, r) => {
+    if (!acc[r.resource_type]) acc[r.resource_type] = [];
+    acc[r.resource_type].push(Number(r.resource_id));
+    return acc;
+  }, {});
+}
+
+exports.getMyAccess = async (req, res, next) => {
+  try {
+    const userId = Number(req.user?.id);
+    if (!Number.isInteger(userId)) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    if (hasFullAdminAccess(req.user?.roles || [])) {
+      return res.json({ user_id: userId, access: {}, all_access: true });
+    }
+    const access = await loadAccessMap(userId);
+    res.json({ user_id: userId, access, all_access: false });
+  } catch (err) {
+    next(err);
+  }
+};
+
 exports.getAccess = async (req, res, next) => {
   try {
-    const userId = Number(req.params.id);
-    const { rows } = await pool.query(
-      `SELECT resource_type, resource_id FROM admin_access WHERE user_id = $1 ORDER BY resource_type, resource_id`,
-      [userId]
-    );
-    const access = rows.reduce((acc, r) => {
-      if (!acc[r.resource_type]) acc[r.resource_type] = [];
-      acc[r.resource_type].push(Number(r.resource_id));
-      return acc;
-    }, {});
-    res.json({ user_id: userId, access });
+    const param = String(req.params.id || '').trim();
+    const requesterId = Number(req.user?.id);
+    const userId = param.toLowerCase() === 'me' ? requesterId : Number(param);
+    if (!Number.isInteger(userId) || userId <= 0) {
+      return res.status(400).json({ error: 'Invalid user id' });
+    }
+
+    if (userId === requesterId && hasFullAdminAccess(req.user?.roles || [])) {
+      return res.json({ user_id: userId, access: {}, all_access: true });
+    }
+
+    const access = await loadAccessMap(userId);
+    res.json({ user_id: userId, access, all_access: false });
   } catch (err) { next(err); }
 };
 

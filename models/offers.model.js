@@ -241,6 +241,37 @@ async function findApplicableOfferRule({
   if (!targetType) return null;
   const matchDate = date || new Date().toISOString().slice(0, 10);
   const matchTime = time || null;
+  
+  console.log('=== OFFER VALIDATION DEBUG ===');
+  console.log('Inputs:', { targetType, targetId, slotType, slotId, matchDate, matchTime });
+  
+  // Create current datetime for validation
+  const now = new Date();
+  
+  // Create booking datetime if date and time are provided
+  let bookingDateTime = null;
+  if (date && time) {
+    // Convert time format (handle both 12-hour with AM/PM and 24-hour formats)
+    let normalizedTime = time;
+    if (time.includes('.') && (time.includes('am') || time.includes('pm'))) {
+      // Handle format like "10.00am" or "01.00pm"
+      const timeMatch = time.match(/(\d{1,2})\.(\d{2})(am|pm)/i);
+      if (timeMatch) {
+        let hours = parseInt(timeMatch[1]);
+        const minutes = parseInt(timeMatch[2]);
+        const period = timeMatch[3].toLowerCase();
+        
+        if (period === 'pm' && hours !== 12) hours += 12;
+        if (period === 'am' && hours === 12) hours = 0;
+        
+        normalizedTime = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
+      }
+    }
+    
+    bookingDateTime = new Date(`${date}T${normalizedTime}`);
+    console.log('Normalized time:', normalizedTime);
+    console.log('Booking datetime:', bookingDateTime);
+  }
 
   const params = [
     targetType,
@@ -248,37 +279,146 @@ async function findApplicableOfferRule({
     slotType,
     slotId,
     matchDate,
-    matchDate,
-    matchTime,
-    matchTime,
   ];
+  
+  console.log('SQL Parameters:', params);
 
   const { rows } = await pool.query(
     `SELECT o.*, r.*
      FROM offers o
      JOIN offer_rules r ON r.offer_id = o.offer_id
      WHERE o.active = true
-       AND (o.valid_from IS NULL OR o.valid_from <= $5::date)
-       AND (o.valid_to IS NULL OR o.valid_to >= $6::date)
+       AND (
+           -- Offer is valid if no dates are set OR current date is within the offer period
+           (o.valid_from IS NULL AND o.valid_to IS NULL) OR
+           (o.valid_from IS NULL AND o.valid_to >= CURRENT_DATE) OR
+           (o.valid_to IS NULL AND o.valid_from <= CURRENT_DATE) OR
+           (o.valid_from <= CURRENT_DATE AND o.valid_to >= CURRENT_DATE)
+         )
        AND (
             (r.applies_to_all = true AND r.target_type = $1)
          OR (r.target_type = $1 AND r.target_id IS NOT NULL AND $2::int IS NOT NULL AND r.target_id = $2::int)
        )
        AND ($3::text IS NULL OR r.slot_type IS NULL OR r.slot_type = $3::text)
        AND ($4::int IS NULL OR r.slot_id IS NULL OR r.slot_id = $4::int)
+       -- Rule date validation
        AND (r.date_from IS NULL OR r.date_from <= $5::date)
-       AND (r.date_to IS NULL OR r.date_to >= $6::date)
-       AND ($7::time IS NULL OR r.time_from IS NULL OR r.time_from <= $7::time)
-       AND ($8::time IS NULL OR r.time_to IS NULL OR r.time_to >= $8::time)
+       AND (r.date_to IS NULL OR r.date_to >= $5::date)
      ORDER BY r.priority DESC, r.rule_id DESC
      LIMIT 1`,
     params
   );
 
+  console.log('SQL rows found:', rows.length);
   if (!rows.length) return null;
+  
   const offer = mapOffer(rows[0]);
   const rule = mapRule(rows[0]);
+  
+  console.log('Found offer:', { 
+    offer_id: offer.offer_id, 
+    title: offer.title, 
+    valid_from: offer.valid_from, 
+    valid_to: offer.valid_to 
+  });
+  console.log('Found rule:', { 
+    rule_id: rule.rule_id, 
+    target_type: rule.target_type, 
+    target_id: rule.target_id,
+    date_from: rule.date_from,
+    date_to: rule.date_to,
+    time_from: rule.time_from,
+    time_to: rule.time_to
+  });
+  
+  // Additional validation: check if offer has actually expired
+  if (offer.valid_to) {
+    const validToDateTime = new Date(offer.valid_to);
+    // If offer valid_to is a date only, set time to end of day
+    if (offer.valid_to.length === 10) {
+      validToDateTime.setHours(23, 59, 59, 999);
+    }
+    
+    console.log('Offer valid_to datetime:', validToDateTime);
+    console.log('Current datetime:', now);
+    
+    // If current datetime is past offer valid_to, don't apply
+    if (now > validToDateTime) {
+      console.log('OFFER EXPIRED - current time is past valid_to');
+      return null;
+    }
+  }
+  
+  // Rule time validation - only apply if both rule time and booking time are provided
+  if (rule.time_from && rule.time_to && matchTime) {
+    console.log('Checking time validation...');
+    
+    // Convert rule times to minutes since midnight for comparison
+    const ruleTimeFromMinutes = timeToMinutes(rule.time_from);
+    const ruleTimeToMinutes = timeToMinutes(rule.time_to);
+    
+    // Convert booking time to minutes since midnight
+    const bookingTimeMinutes = timeToMinutes(matchTime);
+    
+    console.log('Time comparison:', {
+      ruleTimeFrom: rule.time_from,
+      ruleTimeFromMinutes,
+      ruleTimeTo: rule.time_to,
+      ruleTimeToMinutes,
+      bookingTime: matchTime,
+      bookingTimeMinutes
+    });
+    
+    // Check if booking time falls within rule time range
+    if (bookingTimeMinutes < ruleTimeFromMinutes || bookingTimeMinutes > ruleTimeToMinutes) {
+      console.log('TIME VALIDATION FAILED - booking time outside rule time range');
+      return null;
+    }
+    
+    console.log('TIME VALIDATION PASSED');
+  } else if (rule.time_from && !matchTime) {
+    // If rule has time constraint but no booking time provided, don't apply
+    console.log('TIME VALIDATION FAILED - rule has time constraint but no booking time provided');
+    return null;
+  }
+  
+  console.log('OFFER VALIDATION PASSED - applying offer');
+  console.log('=== END OFFER VALIDATION DEBUG ===');
+  
   return { offer, rule };
+}
+
+// Helper function to convert time string to minutes since midnight
+function timeToMinutes(timeStr) {
+  if (!timeStr) return 0;
+  
+  // Handle various time formats
+  let normalizedTime = timeStr;
+  
+  // Handle format like "10.00am" or "01.00pm"
+  if (timeStr.includes('.') && (timeStr.includes('am') || timeStr.includes('pm'))) {
+    const timeMatch = timeStr.match(/(\d{1,2})\.(\d{2})(am|pm)/i);
+    if (timeMatch) {
+      let hours = parseInt(timeMatch[1]);
+      const minutes = parseInt(timeMatch[2]);
+      const period = timeMatch[3].toLowerCase();
+      
+      if (period === 'pm' && hours !== 12) hours += 12;
+      if (period === 'am' && hours === 12) hours = 0;
+      
+      return hours * 60 + minutes;
+    }
+  }
+  
+  // Handle standard HH:MM format
+  const timeMatch = normalizedTime.match(/(\d{1,2}):(\d{2})/);
+  if (timeMatch) {
+    const hours = parseInt(timeMatch[1]);
+    const minutes = parseInt(timeMatch[2]);
+    return hours * 60 + minutes;
+  }
+  
+  return 0;
 }
 
 module.exports = {
