@@ -29,7 +29,7 @@ const resolveClientBaseUrl = () => {
     .split(',')
     .map((val) => String(val || '').trim())
     .filter(Boolean);
-  const fallback = 'http://localhost:4000';
+  const fallback = 'https://snowcity.netlify.app';
   const base = entries[0] || fallback;
   return base.replace(/\/$/, '');
 };
